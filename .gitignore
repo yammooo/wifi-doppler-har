@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data and generated artifacts
+pdfs/
+data/
+dataset/
+doppler_traces/
+processed_phase/
+phase_processing/
+input_files/
+outputs/
+results/
+runs/
+checkpoints/
+models/
+*.h5
+*.pt
+*.pth
+*.ckpt
+
+# Large raw/scientific data
+*.mat
+*.npy
+*.npz
+*.pkl
+*.pickle
+
+# Environment and secrets
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI agent scratch/work dirs
+.codex_tmp/
+.codex/
+.agents/
+.cursor/
+.continue/
+.aider*/
+.claude/
+CLAUDE.md
+AGENTS.md
