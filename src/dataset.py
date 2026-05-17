@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 import os
 import re
 from pathlib import Path
@@ -37,7 +38,7 @@ class DopplerWindowDataset(Dataset):
                  window_size: int = 340,
                  window_stride: int = 30,
                  split_guard: int = 31,
-                 activities: tuple[str] = DEFAULT_ACTIVITIES):
+                 activities: Sequence[str] = DEFAULT_ACTIVITIES):
         self.doppler_traces_dir = doppler_traces_dir
         self.scenarios = scenarios
         self.split = split
