@@ -6,3 +6,4 @@ tqdm
 jupyterlab
 ipykernel
 gdown
+pandas
