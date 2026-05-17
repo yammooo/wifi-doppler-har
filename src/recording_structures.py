@@ -58,4 +58,3 @@ class WindowIndex:
     recording_idx: int
     start: int
     end: int
-    split: str
