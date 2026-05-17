@@ -3,12 +3,14 @@ import re
 from pathlib import Path
 import torch
 import numpy as np
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from recording_structures import TraceRecording, WindowIndex
 
 TRACE_PATTERN = re.compile(
-    r"^(?P<scenario>S(?P<scenario_id>\d+)(?P<campaign>[a-z]))_(?P<activity>[A-Z])(?P<repetition>\d*)_stream_(?P<antenna>\d+)\.txt$"
+    r"^(?P<scenario>S(?P<scenario_id>\d+)(?P<campaign>[a-z]))_"
+    r"(?P<activity>[A-Z])_?(?P<repetition>\d*)_"
+    r"stream_(?P<antenna>\d+)\.txt$"
 )
 
 ACTIVITY_NAMES = {
@@ -150,9 +152,47 @@ class DopplerWindowDataset(Dataset):
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from collections import Counter
+
     dataset = DopplerWindowDataset()
+    print(f"Scenarios: {dataset.scenarios}")
+    print(f"Activities: {dataset.activities}")
+    print(f"Trace recordings: {len(dataset.traces)}")
     print(f"Total windows: {len(dataset)}")
+
+    trace_label_counts = Counter(trace.ground_truth for trace in dataset.traces)
+    window_label_counts = Counter(dataset.traces[window.recording_idx].ground_truth for window in dataset.window_indexes)
+    print(f"Trace label counts: {dict(sorted(trace_label_counts.items()))}")
+    print(f"Window label counts: {dict(sorted(window_label_counts.items()))}")
     
     x, y = dataset[0]
     print(f"Example window shape: {x.shape}, label index: {y.item()}, label: {dataset.idx_to_label[y.item()]}")
-    
+
+    loader = DataLoader(dataset, batch_size=8, shuffle=True)
+    batch_x, batch_y = next(iter(loader))
+    print(f"Batch shape: {batch_x.shape}, labels shape: {batch_y.shape}")
+
+    plot_dir = Path("outputs") / "dataset_smoke"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    for sample_idx in [0, len(dataset) // 2, len(dataset) - 1]:
+        x, y = dataset[sample_idx]
+        window = dataset.window_indexes[sample_idx]
+        trace = dataset.traces[window.recording_idx]
+
+        fig, axes = plt.subplots(1, 4, figsize=(14, 3), sharex=True, sharey=True)
+        for antenna_idx, ax in enumerate(axes):
+            ax.imshow(x[antenna_idx].T, aspect="auto", origin="lower", cmap="viridis")
+            ax.set_title(f"stream {antenna_idx}")
+            ax.set_xlabel("time")
+        axes[0].set_ylabel("Doppler bin")
+        fig.suptitle(
+            f"{trace.scenario}_{trace.activity}{trace.repetition} "
+            f"label={dataset.idx_to_label[y.item()]} window={window.start}:{window.end}"
+        )
+        fig.tight_layout()
+        output_path = plot_dir / f"sample_{sample_idx}_{trace.scenario}_{trace.activity}{trace.repetition}.png"
+        fig.savefig(output_path, dpi=150)
+        plt.close(fig)
+        print(f"Saved {output_path}")
