@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
 
-from recording_structures import TraceRecording, WindowIndex
+from recordings import TraceRecording, WindowIndex
 
 TRACE_PATTERN = re.compile(
     r"^(?P<scenario>S(?P<scenario_id>\d+)(?P<campaign>[a-z]))_"
@@ -29,6 +29,7 @@ DEFAULT_ACTIVITIES = ("E", "L", "W", "R", "J")
 
 # TODO: we now expect 4 antennas, but we should make this more flexible in the future
 class DopplerWindowDataset(Dataset):
+    """PyTorch Dataset for loading windows of Doppler traces from the specified directory. Each window is labeled with the activity being performed during that time period."""
     def __init__(self,
                  doppler_traces_dir='data/doppler_traces/',
                  scenarios=["S1a", "S1b", "S1c"],
