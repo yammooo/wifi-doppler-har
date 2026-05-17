@@ -32,12 +32,12 @@ class DopplerWindowDataset(Dataset):
     """PyTorch Dataset for loading windows of Doppler traces from the specified directory. Each window is labeled with the activity being performed during that time period."""
     def __init__(self,
                  doppler_traces_dir='data/doppler_traces/',
-                 scenarios=["S1a", "S1b", "S1c"],
-                 split = (0, 0.6),
-                 window_size=340,
-                 window_stride=30,
-                 split_guard=31,
-                 activities=DEFAULT_ACTIVITIES):
+                 scenarios: list[str] = ["S1a", "S1b", "S1c"],
+                 split: tuple[float, float] = (0, 0.6),
+                 window_size: int = 340,
+                 window_stride: int = 30,
+                 split_guard: int = 31,
+                 activities: tuple[str] = DEFAULT_ACTIVITIES):
         self.doppler_traces_dir = doppler_traces_dir
         self.scenarios = scenarios
         self.split = split
