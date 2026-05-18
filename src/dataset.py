@@ -30,7 +30,8 @@ DEFAULT_ACTIVITIES = ("E", "L", "W", "R", "J")
 
 # TODO: we now expect 4 antennas, but we should make this more flexible in the future
 class DopplerWindowDataset(Dataset):
-    """PyTorch Dataset for loading windows of Doppler traces from the specified directory. Each window is labeled with the activity being performed during that time period."""
+    """Dataset of fixed-length Doppler windows labeled by activity."""
+
     def __init__(self,
                  doppler_traces_dir='data/doppler_traces/',
                  scenarios: list[str] = ["S1a", "S1b", "S1c"],
@@ -53,9 +54,11 @@ class DopplerWindowDataset(Dataset):
         self.window_indexes = self._create_windows()
 
     def __len__(self):
+        """Number of available windows."""
         return len(self.window_indexes)
 
     def __getitem__(self, idx):
+        """Return one window as [antenna, time, doppler_bin] and its label index."""
         window = self.window_indexes[idx]
         recording = self.traces[window.recording_idx]
 
@@ -70,19 +73,17 @@ class DopplerWindowDataset(Dataset):
         return x, y
 
     def _label_to_index(self, label: str) -> int:
+        """Map an activity code to the class index used by PyTorch."""
         try:
             return self.label_to_idx[label]
         except KeyError as exc:
             raise ValueError(f"Unknown activity label {label!r}. Expected one of {self.activities}") from exc
     
-    # This function parses the traces (trace is [n. antennas x antenna trace]) from the specified directory and returns a list of trace data along with their ground truth labels.
-    # input: 
-    # Takes the traces dir,
-    # output: returns a list of TraceRecording objects
     def _parse_traces(self) -> list[TraceRecording]:
+        """Group per-antenna stream files into complete recordings."""
         traces = []
 
-        # Check if all specified scenarios are present in the directory
+        # Fail early when a requested scenario directory is missing.
         dirs = [entry.name for entry in os.scandir(self.doppler_traces_dir) if entry.is_dir()]
 
         if list(set(self.scenarios) - set(dirs)):
@@ -90,7 +91,7 @@ class DopplerWindowDataset(Dataset):
         
         temp_stream_data = {}
 
-        # Iterate over the specified scenarios and parse the traces
+        # Collect matching antenna files metadata by grouping them by scenario/activity/repetition.
         for scenario_dir in self.scenarios:
             for entry in os.scandir(os.path.join(self.doppler_traces_dir, scenario_dir)):
                 if entry.is_file():
@@ -111,6 +112,7 @@ class DopplerWindowDataset(Dataset):
                             temp_stream_data[key] = [None] * 4
                         temp_stream_data[key][antenna] = stream_path
         
+        # Create list of TraceRecording
         for (scenario, activity, repetition), stream_paths in temp_stream_data.items():
             if None in stream_paths:
                 raise ValueError(f"Missing stream files for scenario {scenario}, activity {activity}, repetition {repetition}")
@@ -125,8 +127,8 @@ class DopplerWindowDataset(Dataset):
 
         return traces
     
-    # This function creates window metadata of the specified size and stride. It returns a list of WindowIndex.
     def _create_windows(self) -> list[WindowIndex]:
+        """Create a list of all valid windows across all recordings"""
         windows = []
 
         for recording_idx, trace in enumerate(self.traces):
@@ -135,6 +137,7 @@ class DopplerWindowDataset(Dataset):
             range_start = int(trace_length * self.split[0])
             range_end = int(trace_length * self.split[1])
 
+            # Guard to ensure no data leakage between splits
             if self.split[0] > 0:
                 range_start += self.split_guard
 
