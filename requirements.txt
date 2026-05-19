@@ -5,5 +5,6 @@ matplotlib
 tqdm
 jupyterlab
 ipykernel
+ipywidgets
 gdown
 pandas

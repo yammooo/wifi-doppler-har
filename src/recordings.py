@@ -37,13 +37,13 @@ class TraceRecording:
             with path.open("rb") as f:
                 arr = pickle.load(f)
 
-                # Normalize the trace as SHARP did
-                arr = arr - arr.mean(axis=0, keepdims=True)
-
             if not isinstance(arr, np.ndarray):
                 raise TypeError(f"Expected NumPy array in {path}, got {type(arr)}")
             if arr.ndim != 2:
                 raise ValueError(f"Expected 2D Doppler trace in {path}, got shape {arr.shape}")
+
+            # Normalize the trace as SHARP did
+            arr = arr - arr.mean(axis=0, keepdims=True)
 
             self._stream_data[antenna_idx] = arr
 

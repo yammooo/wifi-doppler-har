@@ -1,5 +1,24 @@
 # Wi-Fi Doppler HAR
 
+## SHARP Reproduction
+
+We reproduced the SHARP paper training setup with a shared single-antenna
+classifier and decision fusion across four antenna streams. The reproduction
+notebook is `notebooks/sharp_reproduction.ipynb`.
+
+At epoch 25, the run reached:
+
+```text
+train_loss      : 0.4856
+train_sum_acc   : 0.8698
+train_sharp_acc : 0.8779
+val_sum_acc     : 0.8810
+val_sharp_acc   : 0.8804
+best_val_acc    : 0.9553 @ epoch 21
+```
+
+![SHARP reproduction curves](imgs/sharp_reproduction_curves.png)
+
 ## Environment Setup
 
 This project keeps the shared Python dependencies separate from the PyTorch
