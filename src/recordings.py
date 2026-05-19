@@ -37,6 +37,9 @@ class TraceRecording:
             with path.open("rb") as f:
                 arr = pickle.load(f)
 
+                # Normalize the trace as SHARP did
+                arr = arr - arr.mean(axis=0, keepdims=True)
+
             if not isinstance(arr, np.ndarray):
                 raise TypeError(f"Expected NumPy array in {path}, got {type(arr)}")
             if arr.ndim != 2:

@@ -33,7 +33,6 @@ outputs/
 results/
 runs/
 checkpoints/
-models/
 *.h5
 *.pt
 *.pth
