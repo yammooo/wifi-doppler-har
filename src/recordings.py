@@ -7,14 +7,14 @@ import numpy as np
 
 
 @dataclass
-class TraceRecording:
-    """Doppler recording metadata plus lazily loaded antenna streams."""
+class DopplerTraceRecording:
+    """Cached Doppler recording metadata plus lazily loaded streams."""
 
-    scenario: str
-    activity: str
-    repetition: str
+    dataset: str
+    recording_id: str
     ground_truth: str
     stream_paths: tuple[Path, ...]
+    metadata: dict[str, str] = field(default_factory=dict)
 
     _stream_data: list[np.ndarray | None] | None = field(default=None, init=False, repr=False)
 
@@ -66,6 +66,65 @@ class TraceRecording:
     def shape(self) -> tuple[int, int, int]:
         """Shape as (streams, time, doppler bins)."""
         return (len(self.stream_paths), *self._load_stream(0).shape)
+
+
+@dataclass
+class TraceRecording(DopplerTraceRecording):
+    """Backward-compatible SHARP Doppler recording."""
+
+    scenario: str = ""
+    activity: str = ""
+    repetition: str = ""
+
+    def __init__(
+        self,
+        scenario: str,
+        activity: str,
+        repetition: str,
+        ground_truth: str,
+        stream_paths: tuple[Path, ...],
+    ):
+        super().__init__(
+            dataset="sharp",
+            recording_id=f"{scenario}_{activity}_{repetition}",
+            ground_truth=ground_truth,
+            stream_paths=stream_paths,
+            metadata={
+                "scenario": scenario,
+                "activity": activity,
+                "repetition": repetition,
+            },
+        )
+        self.scenario = scenario
+        self.activity = activity
+        self.repetition = repetition
+
+
+@dataclass
+class XRF55RawRecording:
+    """One XRF55 raw Wi-Fi CSI trial."""
+
+    scene: str
+    receiver: str
+    subject: str
+    action: str
+    repetition: str
+    path: Path
+
+    _csi: np.ndarray | None = field(default=None, init=False, repr=False)
+
+    @property
+    def recording_id(self) -> str:
+        return f"{self.scene}_{self.receiver}_{self.subject}_{self.action}_{self.repetition}"
+
+    def load_csi(self, strict: bool = False) -> np.ndarray:
+        """Return CSI as [packet, subcarrier, rx, tx]."""
+        if self._csi is None:
+            from xrf55_csi import read_xrf55_wifi_file, records_to_csi_array
+
+            records = read_xrf55_wifi_file(self.path, strict=strict)
+            self._csi = records_to_csi_array(records)
+        return self._csi
 
 
 @dataclass(frozen=True)
