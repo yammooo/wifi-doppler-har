@@ -110,6 +110,31 @@ def compute_csif_like_doppler_for_file(
 ) -> np.ndarray:
     records = read_xrf55_wifi_file(path, strict=False)
     csi = records_to_csi_array(records)
+    return compute_csif_like_doppler(
+        csi,
+        mode=mode,
+        stream_idx=stream_idx,
+        rx_pair=rx_pair,
+        sample_rate_hz=sample_rate_hz,
+        hampel_window=hampel_window,
+        hampel_sigmas=hampel_sigmas,
+        butter_low_hz=butter_low_hz,
+        butter_high_hz=butter_high_hz,
+    )
+
+
+def compute_csif_like_doppler(
+    csi: np.ndarray,
+    mode: str = "amplitude",
+    stream_idx: int | None = None,
+    rx_pair: tuple[int, int] = (0, 1),
+    sample_rate_hz: float = 200.0,
+    hampel_window: int = 7,
+    hampel_sigmas: float = 3.0,
+    butter_low_hz: float | None = None,
+    butter_high_hz: float | None = None,
+) -> np.ndarray:
+    """Compute one CSI-F-like Doppler trace from CSI shaped [packet, subcarrier, rx, tx]."""
     features = build_feature_matrix(csi, mode=mode, stream_idx=stream_idx, rx_pair=rx_pair)
     features = hampel_filter_matrix(features, window_size=hampel_window, n_sigmas=hampel_sigmas)
     component = first_principal_component(features)

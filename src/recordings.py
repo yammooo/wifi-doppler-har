@@ -127,6 +127,52 @@ class XRF55RawRecording:
         return self._csi
 
 
+@dataclass
+class XRF55DopplerRecording:
+    """One cached XRF55 Doppler trial."""
+
+    scene: str
+    receiver: str
+    subject: str
+    action: str
+    repetition: str
+    path: Path
+
+    _doppler: np.ndarray | None = field(default=None, init=False, repr=False)
+
+    @property
+    def recording_id(self) -> str:
+        return f"{self.scene}_{self.receiver}_{self.subject}_{self.action}_{self.repetition}"
+
+    @property
+    def metadata(self) -> dict[str, str]:
+        return {
+            "scene": self.scene,
+            "receiver": self.receiver,
+            "subject": self.subject,
+            "action": self.action,
+            "repetition": self.repetition,
+        }
+
+    def load_doppler(self) -> np.ndarray:
+        """Return cached Doppler as [time, doppler_bin]."""
+        if self._doppler is None:
+            if not self.path.is_file():
+                raise FileNotFoundError(f"Missing Doppler cache file: {self.path}")
+
+            with np.load(self.path, allow_pickle=False) as data:
+                if "doppler" not in data:
+                    raise KeyError(f"Missing 'doppler' array in {self.path}")
+                doppler = data["doppler"]
+
+            if doppler.ndim != 2:
+                raise ValueError(f"Expected 2D Doppler array in {self.path}, got shape {doppler.shape}")
+
+            self._doppler = doppler
+
+        return self._doppler
+
+
 @dataclass(frozen=True)
 class WindowIndex:
     """Index of a window within a recording, used for dataset indexing and slicing."""
