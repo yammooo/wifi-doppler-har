@@ -8,3 +8,4 @@ ipykernel
 ipywidgets
 gdown
 pandas
+osqp
