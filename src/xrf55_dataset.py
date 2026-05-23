@@ -1,6 +1,7 @@
 """Dataset indexing and cache helpers for XRF55 Wi-Fi data."""
 
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 import re
 
@@ -19,6 +20,14 @@ XRF55_DOPPLER_CACHE_PATTERN = re.compile(
     r"^(?P<scene>Scene_\d+)_(?P<receiver>[^_]+)_"
     r"(?P<subject>\d{2})_(?P<action>\d{2})_(?P<repetition>\d{2})\.npz$"
 )
+
+
+@dataclass(frozen=True)
+class DopplerCropIndex:
+    """Index of one crop within one cached Doppler recording."""
+
+    recording_idx: int
+    crop_idx: int
 
 
 def scan_xrf55_raw_wifi(root: str | Path = "data/XRF55_rawdata/WiFi") -> list[XRF55RawRecording]:
@@ -155,12 +164,26 @@ class XRF55DopplerDataset(Dataset):
         subjects: set[str] | None = None,
         actions: set[str] | None = None,
         repetitions: set[str] | None = None,
+        crop_size: int | None = None,
+        crops_per_recording: int = 1,
+        crop_strategy: str = "none",
+        crop_jitter: int = 0,
     ):
         if label_mode not in {"action", "subject"}:
             raise ValueError("label_mode must be 'action' or 'subject'")
+        if crop_strategy not in {"none", "center", "random_center_jitter", "even"}:
+            raise ValueError("crop_strategy must be one of: none, center, random_center_jitter, even")
+        if crops_per_recording < 1:
+            raise ValueError("crops_per_recording must be >= 1")
+        if crop_strategy != "none" and crop_size is None:
+            raise ValueError("crop_size is required when crop_strategy is not 'none'")
 
         self.cache_root = Path(cache_root)
         self.label_mode = label_mode
+        self.crop_size = crop_size
+        self.crops_per_recording = crops_per_recording
+        self.crop_strategy = crop_strategy
+        self.crop_jitter = crop_jitter
         self.recordings = [
             recording
             for recording in scan_xrf55_doppler_cache(self.cache_root)
@@ -170,17 +193,24 @@ class XRF55DopplerDataset(Dataset):
             and _matches_filter(recording.action, actions)
             and _matches_filter(recording.repetition, repetitions)
         ]
+        self.crop_indexes = [
+            DopplerCropIndex(recording_idx=recording_idx, crop_idx=crop_idx)
+            for recording_idx in range(len(self.recordings))
+            for crop_idx in range(self.crops_per_recording)
+        ]
 
         labels = sorted({self._recording_label(recording) for recording in self.recordings})
         self.label_to_idx = {label: idx for idx, label in enumerate(labels)}
         self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}
 
     def __len__(self) -> int:
-        return len(self.recordings)
+        return len(self.crop_indexes)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        recording = self.recordings[idx]
+        crop_index = self.crop_indexes[idx]
+        recording = self.recordings[crop_index.recording_idx]
         doppler = recording.load_doppler()
+        doppler = self._crop_doppler(doppler, crop_index.crop_idx)
         x = torch.from_numpy(doppler).float().unsqueeze(0)
         x = x - x.mean(dim=1, keepdim=True)
         y = torch.tensor(self.label_to_idx[self._recording_label(recording)], dtype=torch.long)
@@ -188,6 +218,36 @@ class XRF55DopplerDataset(Dataset):
 
     def _recording_label(self, recording: XRF55DopplerRecording) -> str:
         return recording.action if self.label_mode == "action" else recording.subject
+
+    def _crop_doppler(self, doppler: np.ndarray, crop_idx: int) -> np.ndarray:
+        if self.crop_strategy == "none" or self.crop_size is None:
+            return doppler
+
+        if self.crop_size > doppler.shape[0]:
+            raise ValueError(f"crop_size {self.crop_size} exceeds Doppler length {doppler.shape[0]}")
+
+        start = self._crop_start(doppler.shape[0], crop_idx)
+        end = start + self.crop_size
+        return doppler[start:end]
+
+    def _crop_start(self, trace_length: int, crop_idx: int) -> int:
+        max_start = trace_length - self.crop_size
+        center_start = max_start // 2
+
+        if self.crop_strategy == "center":
+            return center_start
+
+        if self.crop_strategy == "random_center_jitter":
+            low = max(0, center_start - self.crop_jitter)
+            high = min(max_start, center_start + self.crop_jitter)
+            return int(torch.randint(low, high + 1, size=(1,)).item())
+
+        if self.crop_strategy == "even":
+            if self.crops_per_recording == 1:
+                return center_start
+            return round(crop_idx * max_start / (self.crops_per_recording - 1))
+
+        raise ValueError(f"Unknown crop strategy: {self.crop_strategy}")
 
 
 def _matches_filter(value: str, allowed: set[str] | None) -> bool:
