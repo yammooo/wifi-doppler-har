@@ -182,6 +182,7 @@ class XRF55DopplerDataset(Dataset):
         recording = self.recordings[idx]
         doppler = recording.load_doppler()
         x = torch.from_numpy(doppler).float().unsqueeze(0)
+        x = x - x.mean(dim=1, keepdim=True)
         y = torch.tensor(self.label_to_idx[self._recording_label(recording)], dtype=torch.long)
         return x, y
 
