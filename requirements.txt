@@ -9,3 +9,4 @@ ipywidgets
 gdown
 pandas
 osqp
+PyWavelets
