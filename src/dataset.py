@@ -8,9 +8,15 @@ from torch.utils.data import DataLoader, Dataset
 
 from recordings import TraceRecording, WindowIndex
 
-TRACE_PATTERN = re.compile(
+AR_TRACE_PATTERN = re.compile(
     r"^(?P<scenario>S(?P<scenario_id>\d+)(?P<campaign>[a-z]))_"
-    r"(?P<activity>[A-Z])_?(?P<repetition>\d*)_"
+    r"(?P<label>[A-Z])_?(?P<repetition>\d*)_"
+    r"stream_(?P<antenna>\d+)\.txt$"
+)
+
+PI_TRACE_PATTERN = re.compile(
+    r"^(?P<scenario>PI(?P<scenario_id>\d+)(?P<campaign>[a-z]))_"
+    r"(?P<label>p\d+)_"
     r"stream_(?P<antenna>\d+)\.txt$"
 )
 
@@ -28,9 +34,24 @@ ACTIVITY_NAMES = {
 
 DEFAULT_ACTIVITIES = ("E", "L", "W", "R", "J")
 
+
+def parse_trace_filename(filename: str) -> dict[str, str | int] | None:
+    """Parse old AR and new PI Doppler trace filenames into common fields."""
+    for pattern in (AR_TRACE_PATTERN, PI_TRACE_PATTERN):
+        match = pattern.match(filename)
+        if match:
+            info = match.groupdict()
+            return {
+                "scenario": info["scenario"],
+                "label": info["label"],
+                "repetition": info.get("repetition") or "",
+                "antenna": int(info["antenna"]),
+            }
+    return None
+
 # TODO: we now expect 4 antennas, but we should make this more flexible in the future
 class DopplerWindowDataset(Dataset):
-    """Dataset of fixed-length Doppler windows labeled by activity."""
+    """Dataset of fixed-length Doppler windows labeled by a filename target token."""
 
     def __init__(self,
                  doppler_traces_dir='data/doppler_traces/',
@@ -39,15 +60,19 @@ class DopplerWindowDataset(Dataset):
                  window_size: int = 340,
                  window_stride: int = 30,
                  split_guard: int = 31,
-                 activities: Sequence[str] = DEFAULT_ACTIVITIES):
+                 labels: Sequence[str] | None = None,
+                 activities: Sequence[str] | None = None):
         self.doppler_traces_dir = doppler_traces_dir
         self.scenarios = scenarios
         self.split = split
         self.window_size = window_size
         self.window_stride = window_stride
         self.split_guard = split_guard
-        self.activities = tuple(activities)
-        self.label_to_idx = {label: idx for idx, label in enumerate(self.activities)}
+        if labels is not None and activities is not None:
+            raise ValueError("Use either labels or activities, not both.")
+        self.labels = tuple(labels if labels is not None else activities if activities is not None else DEFAULT_ACTIVITIES)
+        self.activities = self.labels
+        self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
         self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}
 
         self.traces = self._parse_traces()
@@ -73,11 +98,11 @@ class DopplerWindowDataset(Dataset):
         return x, y
 
     def _label_to_index(self, label: str) -> int:
-        """Map an activity code to the class index used by PyTorch."""
+        """Map a target label to the class index used by PyTorch."""
         try:
             return self.label_to_idx[label]
         except KeyError as exc:
-            raise ValueError(f"Unknown activity label {label!r}. Expected one of {self.activities}") from exc
+            raise ValueError(f"Unknown label {label!r}. Expected one of {self.labels}") from exc
     
     def _parse_traces(self) -> list[TraceRecording]:
         """Group per-antenna stream files into complete recordings."""
@@ -91,36 +116,35 @@ class DopplerWindowDataset(Dataset):
         
         temp_stream_data = {}
 
-        # Collect matching antenna files metadata by grouping them by scenario/activity/repetition.
+        # Collect matching antenna files metadata by grouping them by scenario/label/repetition.
         for scenario_dir in self.scenarios:
             for entry in os.scandir(os.path.join(self.doppler_traces_dir, scenario_dir)):
                 if entry.is_file():
-                    match = TRACE_PATTERN.match(entry.name)
-                    if match:
-                        trace_info = match.groupdict()
-                        scenario = trace_info["scenario"]
-                        activity = trace_info["activity"]
-                        repetition = trace_info["repetition"]
+                    trace_info = parse_trace_filename(entry.name)
+                    if trace_info:
+                        scenario = scenario_dir
+                        label = str(trace_info["label"])
+                        repetition = str(trace_info["repetition"])
                         antenna = int(trace_info["antenna"])
                         stream_path = Path(self.doppler_traces_dir) / scenario_dir / entry.name
 
-                        if activity not in self.label_to_idx:
+                        if label not in self.label_to_idx:
                             continue
 
-                        key = (scenario, activity, repetition)
+                        key = (scenario, label, repetition)
                         if key not in temp_stream_data:
                             temp_stream_data[key] = [None] * 4
                         temp_stream_data[key][antenna] = stream_path
         
         # Create list of TraceRecording
-        for (scenario, activity, repetition), stream_paths in temp_stream_data.items():
+        for (scenario, label, repetition), stream_paths in temp_stream_data.items():
             if None in stream_paths:
-                raise ValueError(f"Missing stream files for scenario {scenario}, activity {activity}, repetition {repetition}")
+                raise ValueError(f"Missing stream files for scenario {scenario}, label {label}, repetition {repetition}")
             trace_recording = TraceRecording(
                 scenario=scenario,
-                activity=activity,
+                label=label,
                 repetition=repetition,
-                ground_truth=activity,
+                ground_truth=label,
                 stream_paths=tuple(stream_paths)
             )
             traces.append(trace_recording)
@@ -162,7 +186,7 @@ if __name__ == "__main__":
 
     dataset = DopplerWindowDataset()
     print(f"Scenarios: {dataset.scenarios}")
-    print(f"Activities: {dataset.activities}")
+    print(f"Labels: {dataset.labels}")
     print(f"Trace recordings: {len(dataset.traces)}")
     print(f"Total windows: {len(dataset)}")
 
@@ -193,11 +217,11 @@ if __name__ == "__main__":
             ax.set_xlabel("time")
         axes[0].set_ylabel("Doppler bin")
         fig.suptitle(
-            f"{trace.scenario}_{trace.activity}{trace.repetition} "
+            f"{trace.scenario}_{trace.label}{trace.repetition} "
             f"label={dataset.idx_to_label[y.item()]} window={window.start}:{window.end}"
         )
         fig.tight_layout()
-        output_path = plot_dir / f"sample_{sample_idx}_{trace.scenario}_{trace.activity}{trace.repetition}.png"
+        output_path = plot_dir / f"sample_{sample_idx}_{trace.scenario}_{trace.label}{trace.repetition}.png"
         fig.savefig(output_path, dpi=150)
         plt.close(fig)
         print(f"Saved {output_path}")

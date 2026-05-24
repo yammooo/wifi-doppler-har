@@ -11,7 +11,7 @@ class TraceRecording:
     """Doppler recording metadata plus lazily loaded antenna streams."""
 
     scenario: str
-    activity: str
+    label: str
     repetition: str
     ground_truth: str
     stream_paths: tuple[Path, ...]
@@ -66,6 +66,11 @@ class TraceRecording:
     def shape(self) -> tuple[int, int, int]:
         """Shape as (streams, time, doppler bins)."""
         return (len(self.stream_paths), *self._load_stream(0).shape)
+
+    @property
+    def activity(self) -> str:
+        """Backward-compatible alias for older HAR code."""
+        return self.label
 
 
 @dataclass(frozen=True)
