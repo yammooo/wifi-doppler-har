@@ -49,10 +49,11 @@ Can SHARP Doppler traces support basic person identification in a same-domain PI
 
 ### Artifacts
 
-- Run directory: [outputs/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103](/C:/Users/gianm/Development/wifi-doppler-har/outputs/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103)
-- Model checkpoint: [model.pt](/C:/Users/gianm/Development/wifi-doppler-har/outputs/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103/model.pt)
-- Training curves: [training_curves.png](/C:/Users/gianm/Development/wifi-doppler-har/outputs/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103/training_curves.png)
-- Confusion matrix: [confusion_matrix.png](/C:/Users/gianm/Development/wifi-doppler-har/outputs/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103/confusion_matrix.png)
+- Run directory: [experiments/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103](../experiments/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103)
+
+![5-person training curves](../experiments/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103/training_curves.png)
+
+![5-person confusion matrix](../experiments/pi_classification/pi_5persons_same_domain_sharp_model_20260525_152103/confusion_matrix.png)
 
 ### Interpretation
 
@@ -60,23 +61,56 @@ This is a sanity-check result, not the final contribution. Accuracy is clearly a
 
 The result does not yet establish domain robustness because training and validation are both from `PI-1a`. The temporal split may also contain correlated neighboring windows, so this should be treated as an optimistic baseline.
 
-### 2026-05-25 10-Person Cross-Domain Sharp Model Mean Fusion
+## 2026-05-25 - 10-Person Cross-Domain Sharp Model Mean Fusion
 
-- Expand to all available PI identities.
-- Evaluate cross-domain transfer with leave-one-PI-domain-out splits.
+This rerun logs both source-domain validation and target-domain validation, so we can separate ordinary train/validation learning from held-out-domain generalization.
 
 ### Question
 
-Does the SHARP Doppler classifier generalize across PI domain shifts?
+Does the SHARP Doppler classifier generalize across PI domain shifts when trained on three PI domains and tested on a fourth?
 
-### Intended Setup
+### Setup
 
 - Data: `data/doppler_traces_pi`
 - Persons: all available PI identities `p03`, `p05`-`p13`
 - Model: SHARP CNN backbone with four-antenna wrapper
 - Fusion: `mean`
 - Objective: cross-entropy on fused four-antenna logits
-- Primary protocol: train on three PI domains and test on the held-out fourth domain
+- Protocol: train on three PI domains, validate on both source domains and a held-out fourth domain
+- Train domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Source validation domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Target validation domain: `PI-4a`
+- Split: temporal split inside each trace
+  - train: `split=(0, 0.6)`
+  - validation: `split=(0.6, 0.8)`
+- Epochs: 25
+- Window size: 340
+- Window stride: 30
 
-- Train: `PI-1a`, `PI-2a`, `PI-3a`
-- Test: `PI-4a`
+### Result
+
+- Best target validation accuracy: `0.3159`
+- Restored target validation accuracy: `0.3159`
+- Best target epoch: 14
+- Final train eval accuracy: `0.7643`
+- Final source-domain validation accuracy: `0.7032`
+- Final target-domain validation accuracy: `0.2986`
+- Final train eval loss: `0.7294`
+- Final source-domain validation loss: `1.4194`
+- Final target-domain validation loss: `2.2990`
+
+### Artifacts
+
+- Run directory: [outputs/pi_classification/pi_all_persons_123_train_4_test_sharp_model_20260525_165437](../experiments/pi_classification/pi_all_persons_123_train_4_test_sharp_model_20260525_165437)
+
+![10-person training curves](../experiments/pi_classification/pi_all_persons_123_train_4_test_sharp_model_20260525_165437/training_curves.png)
+
+![10-person target-domain confusion matrix](../experiments/pi_classification/pi_all_persons_123_train_4_test_sharp_model_20260525_165437/confusion_matrix.png)
+
+### Interpretation
+
+This result makes the domain gap clearer than the previous run. The model learns the source domains: final train accuracy is about `76%`, and source-domain validation reaches about `70%` using a held-out temporal split from the same PI domains. However, performance on the unseen `PI-4a` domain peaks at only about `32%` and finishes around `30%`.
+
+This suggests the SHARP Doppler representation contains person-identification signal, but a standard fused softmax classifier does not learn identity features that transfer cleanly across the PI domain shift. The gap is large despite the meeting-room label being the same, because `PI-4a` differs in monitor position, Tx/Rx link, NLOS obstruction, and TP-Link receiver configuration.
+
+For the project direction, this is a useful baseline rather than a blocker. It motivates few-shot target-domain enrollment: instead of expecting zero-shot transfer to `PI-4a`, the next question is whether a small number of target-domain examples per identity can adapt the embedding through prototype inference.
