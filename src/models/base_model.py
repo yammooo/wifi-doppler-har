@@ -55,15 +55,17 @@ class MultiAntennaModel(torch.nn.Module):
         super().__init__()
         self.backbone = backbone
 
+    # Returns per-antenna logits without fusion as (batch_size, num_antennas, num_classes)
     def forward_antennas(self, x):
         # x: [batch, antennas, time, doppler]
         batch_size, num_antennas, time_steps, doppler_bins = x.shape
 
         x = x.reshape(batch_size * num_antennas, 1, time_steps, doppler_bins)
-        logits = self.backbone(x)
+        logits = self.backbone(x) # (batch_size * num_antennas, num_classes)
 
         return logits.reshape(batch_size, num_antennas, -1)
 
+    # Returns fused logits as (batch_size, num_classes)
     def forward(self, x, fusion="sum"):
         logits = self.forward_antennas(x)
 
