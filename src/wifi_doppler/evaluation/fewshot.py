@@ -12,7 +12,7 @@ def window_true_labels_from_recordings(dataset: DopplerWindowDataset) -> np.ndar
     """Return the integer label for each window without loading window arrays."""
     labels = []
     for window in dataset.window_indexes:
-        trace = dataset.traces[window.trace_recording_idx]
+        trace = dataset.traces[window.recording_idx]
         labels.append(dataset.label_to_idx[trace.ground_truth])
     return np.asarray(labels, dtype=np.int64)
 
