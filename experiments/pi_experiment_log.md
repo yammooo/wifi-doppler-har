@@ -173,3 +173,45 @@ Report at least:
 - Supervised contrastive embedding + K-shot prototype inference
 
 The key result is whether target-domain enrollment closes part of the gap between source-domain validation accuracy and held-out-domain zero-shot accuracy.
+
+## 2026-05-26 - Few-Shot Softmax Embedding Evaluation
+
+### Question
+
+Can target-domain K-shot prototype inference improve over zero-shot softmax prediction when using the already-trained softmax SHARP model as an embedding extractor?
+
+### Setup
+
+- Encoder checkpoint: softmax SHARP model trained on `PI-1a`, `PI-2a`, `PI-3a`
+- Target domain: `PI-4a`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Enrollment source: target-domain windows
+- Query source: held-out target-domain windows
+- Embedding source: pre-classifier SHARP CNN features from the softmax-trained model
+- Prototype method: sample `K` enrollment windows per person, average embeddings into one prototype per person, classify query embeddings by nearest prototype
+- Trials per K: 20
+
+### Result
+
+| K enrollment windows/person | Mean query accuracy | Std |
+| ---: | ---: | ---: |
+| 1 | `0.2046` | `0.0328` |
+| 3 | `0.2517` | `0.0210` |
+| 5 | `0.2765` | `0.0228` |
+| 10 | `0.3044` | `0.0144` |
+| 25 | `0.3248` | `0.0184` |
+| 50 | `0.3269` | `0.0125` |
+| 100 | `0.3416` | `0.0091` |
+
+### Artifacts
+
+- Run directory: [experiments/few_shot_softmax_evaluation/few_shot_softmax_evaluation_20260526_171738](../experiments/few_shot_softmax_evaluation/few_shot_softmax_evaluation_20260526_171738)
+- Results JSON: [pi_few_shot_softmax_results.json](../experiments/few_shot_softmax_evaluation/few_shot_softmax_evaluation_20260526_171738/pi_few_shot_softmax_results.json)
+
+![Few-shot softmax embedding accuracy](../experiments/few_shot_softmax_evaluation/few_shot_softmax_evaluation_20260526_171738/pi_few_shot_softmax_accuracy.png)
+
+### Interpretation
+
+Accuracy increases with K, which suggests the prototype evaluation is behaving sensibly: more enrollment windows produce more stable person prototypes. However, the improvement is modest. Small-K settings are weak, and even `K=100` reaches only about `34%` query accuracy.
+
+This indicates that the softmax-trained SHARP encoder is not a strong metric embedding model for few-shot prototype inference. The classifier was trained to separate known identities through a learned linear head, not to make same-person windows cluster tightly under cosine or Euclidean distance. This result strengthens the motivation for supervised contrastive training, where the objective directly optimizes embedding geometry for prototype-style inference.
