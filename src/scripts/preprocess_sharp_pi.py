@@ -25,7 +25,7 @@ from scipy.signal.windows import hann
 from tqdm import tqdm
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SHARP_DIR = PROJECT_ROOT / "external" / "sharp"
 PHASE_DIR = SHARP_DIR / "phase_processing"
 DEFAULT_PI_SUBSETS = ("PI-1a", "PI-2a", "PI-3a", "PI-4a")

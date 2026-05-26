@@ -22,8 +22,8 @@ class SingleAntennaModel(torch.nn.Module):
             torch.nn.LazyLinear(out_features=num_classes),
         )
 
-    def forward(self, x):
-
+    def forward_feature_maps(self, x):
+        """Return convolutional feature maps before the classifier."""
         branch1 = self.maxpool_branch1(x)
         branch1 = torch.nn.ReLU()(branch1)
 
@@ -43,6 +43,15 @@ class SingleAntennaModel(torch.nn.Module):
         out = self.conv_final(concatenated)
         out = torch.nn.ReLU()(out)
 
+        return out
+
+    def forward_embedding(self, x):
+        """Return flattened pre-classifier features for embedding evaluation."""
+        feature_maps = self.forward_feature_maps(x)
+        return torch.flatten(feature_maps, start_dim=1)
+
+    def forward(self, x):
+        out = self.forward_feature_maps(x)
         out = self.classifier(out)
 
         return out
@@ -64,6 +73,30 @@ class MultiAntennaModel(torch.nn.Module):
         logits = self.backbone(x) # (batch_size * num_antennas, num_classes)
 
         return logits.reshape(batch_size, num_antennas, -1)
+
+    def forward_antenna_embeddings(self, x):
+        """Return per-antenna embeddings as (batch_size, num_antennas, embedding_dim)."""
+        batch_size, num_antennas, time_steps, doppler_bins = x.shape
+
+        x = x.reshape(batch_size * num_antennas, 1, time_steps, doppler_bins)
+        embeddings = self.backbone.forward_embedding(x)
+
+        return embeddings.reshape(batch_size, num_antennas, -1)
+
+    def forward_embedding(self, x, fusion="mean"):
+        """Return one fused embedding per sample."""
+        embeddings = self.forward_antenna_embeddings(x)
+
+        if fusion == "mean":
+            return embeddings.mean(dim=1)
+
+        if fusion == "sum":
+            return embeddings.sum(dim=1)
+
+        if fusion == "concat":
+            return embeddings.flatten(start_dim=1)
+
+        raise ValueError(f"Unknown embedding fusion method: {fusion}")
 
     # Returns fused logits as (batch_size, num_classes)
     def forward(self, x, fusion="sum"):

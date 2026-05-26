@@ -114,3 +114,62 @@ This result makes the domain gap clearer than the previous run. The model learns
 This suggests the SHARP Doppler representation contains person-identification signal, but a standard fused softmax classifier does not learn identity features that transfer cleanly across the PI domain shift. The gap is large despite the meeting-room label being the same, because `PI-4a` differs in monitor position, Tx/Rx link, NLOS obstruction, and TP-Link receiver configuration.
 
 For the project direction, this is a useful baseline rather than a blocker. It motivates few-shot target-domain enrollment: instead of expecting zero-shot transfer to `PI-4a`, the next question is whether a small number of target-domain examples per identity can adapt the embedding through prototype inference.
+
+## Planned - Few-Shot Target-Domain Enrollment
+
+### Question
+
+Can a small number of target-domain enrollment examples improve person identification under PI domain shift?
+
+### Important Distinction
+
+This experiment is not true unseen-person few-shot identification. The dataset only has 10 PI identities, so holding out people would leave too few identities for a strong training/evaluation protocol.
+
+The intended first few-shot setting is known-identity target-domain adaptation:
+
+- Train identities: all 10 PI people
+- Train domains: source PI domains, e.g. `PI-1a`, `PI-2a`, `PI-3a`
+- Target domain: held-out PI domain, e.g. `PI-4a`
+- Target enrollment: sample `K` windows per person from the target domain
+- Target query: classify the remaining target-domain windows
+
+This evaluates whether a few target-domain examples can compensate for the domain shift observed in the zero-shot softmax baseline.
+
+### Protocol
+
+1. Train an encoder on source domains.
+2. Remove or ignore the final softmax classifier.
+3. Extract embeddings from target-domain windows.
+4. For each person, sample `K` target-domain enrollment windows.
+5. Average their embeddings to form one prototype per person.
+6. Classify target-domain query windows by nearest prototype.
+
+Candidate values:
+
+- `K = 1, 3, 5, 10`
+- Distance: cosine similarity or Euclidean distance after embedding normalization
+- Repeat random enrollment sampling several times and report mean/std accuracy
+
+### Baselines
+
+Softmax-trained encoder:
+
+- Use the current fused softmax classifier as a cheap embedding baseline.
+- This does not optimize a few-shot objective.
+- It only tests whether ordinary cross-entropy training accidentally learns an embedding useful for prototype inference.
+
+Supervised contrastive encoder:
+
+- Train with same-person positives and different-person negatives.
+- Evaluate with the same K-shot prototype protocol.
+- This better matches the few-shot objective because the training loss directly shapes embedding distances.
+
+### Expected Comparison
+
+Report at least:
+
+- Zero-shot softmax prediction on held-out target domain
+- Softmax-trained embedding + K-shot prototype inference
+- Supervised contrastive embedding + K-shot prototype inference
+
+The key result is whether target-domain enrollment closes part of the gap between source-domain validation accuracy and held-out-domain zero-shot accuracy.
