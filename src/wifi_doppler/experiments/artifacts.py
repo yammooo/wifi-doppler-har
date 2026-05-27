@@ -159,3 +159,47 @@ def plot_history_curves(
         fig.suptitle(title)
     fig.tight_layout()
     return fig, axes
+
+
+def plot_step_curves(
+    history: dict[str, list[float]],
+    *,
+    step_key: str = "step",
+    loss_keys: list[str] | tuple[str, ...] = (),
+    acc_keys: list[str] | tuple[str, ...] = (),
+    title: str | None = None,
+):
+    """Plot loss and accuracy curves against an explicit step axis."""
+    ncols = int(bool(loss_keys)) + int(bool(acc_keys))
+    if ncols == 0:
+        raise ValueError("At least one of loss_keys or acc_keys must be provided.")
+
+    steps = history[step_key]
+    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
+    axes = np.atleast_1d(axes)
+    axis_idx = 0
+
+    if loss_keys:
+        ax = axes[axis_idx]
+        for key in loss_keys:
+            ax.plot(steps, history[key], marker="o", markersize=2, label=key)
+        ax.set_xlabel("training step")
+        ax.set_ylabel("loss")
+        ax.grid(True)
+        ax.legend()
+        axis_idx += 1
+
+    if acc_keys:
+        ax = axes[axis_idx]
+        for key in acc_keys:
+            ax.plot(steps, history[key], marker="o", markersize=2, label=key)
+        ax.set_xlabel("training step")
+        ax.set_ylabel("accuracy")
+        ax.set_ylim(0, 1)
+        ax.grid(True)
+        ax.legend()
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    return fig, axes

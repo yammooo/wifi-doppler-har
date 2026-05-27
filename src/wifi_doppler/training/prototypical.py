@@ -79,6 +79,60 @@ def load_episode(dataset, support_indices: np.ndarray, query_indices: np.ndarray
     )
 
 
+def sample_cross_dataset_episode_indices(
+    support_labels: np.ndarray,
+    query_labels: np.ndarray,
+    *,
+    n_way: int,
+    k_shot: int,
+    q_query: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample support/query indices when support and query are separate datasets."""
+    support_groups = group_indices_by_label(support_labels)
+    query_groups = group_indices_by_label(query_labels)
+    eligible_labels = [
+        label for label in sorted(set(support_groups) & set(query_groups))
+        if support_groups[label].size >= k_shot and query_groups[label].size >= q_query
+    ]
+    if len(eligible_labels) < n_way:
+        raise ValueError(
+            f"Only {len(eligible_labels)} classes have enough support/query samples; "
+            f"n_way={n_way}, k_shot={k_shot}, q_query={q_query}."
+        )
+
+    episode_labels = rng.choice(eligible_labels, size=n_way, replace=False)
+    support_indices = []
+    query_indices = []
+    for label in episode_labels:
+        support_indices.extend(
+            rng.choice(support_groups[int(label)], size=k_shot, replace=False).tolist()
+        )
+        query_indices.extend(
+            rng.choice(query_groups[int(label)], size=q_query, replace=False).tolist()
+        )
+
+    return np.asarray(support_indices, dtype=np.int64), np.asarray(query_indices, dtype=np.int64)
+
+
+def load_cross_dataset_episode(
+    support_dataset,
+    support_indices: np.ndarray,
+    query_dataset,
+    query_indices: np.ndarray,
+) -> Episode:
+    """Load one episode with support and query windows from different datasets."""
+    support_samples = [support_dataset[int(index)] for index in support_indices]
+    query_samples = [query_dataset[int(index)] for index in query_indices]
+
+    return Episode(
+        support_x=torch.stack([x for x, _ in support_samples]),
+        support_y=torch.stack([y for _, y in support_samples]),
+        query_x=torch.stack([x for x, _ in query_samples]),
+        query_y=torch.stack([y for _, y in query_samples]),
+    )
+
+
 def sample_episode(
     dataset,
     *,
@@ -130,7 +184,7 @@ def prototypical_loss(
     return loss, accuracy
 
 
-def run_prototypical_epoch(
+def run_prototypical_steps(
     model: torch.nn.Module,
     dataset,
     optimizer: torch.optim.Optimizer,
@@ -144,7 +198,7 @@ def run_prototypical_epoch(
     embedding_fusion: str = "mean",
     metric: str = "cosine",
 ) -> dict[str, float]:
-    """Train for one epoch made of sampled prototypical episodes."""
+    """Train for a fixed number of sampled prototypical episodes."""
     model.train()
 
     total_loss = 0.0
