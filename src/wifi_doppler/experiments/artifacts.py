@@ -179,10 +179,16 @@ def plot_step_curves(
     axes = np.atleast_1d(axes)
     axis_idx = 0
 
+    def plot_series(ax, key: str):
+        x = np.asarray(steps, dtype=float)
+        y = np.asarray(history[key], dtype=float)
+        valid = np.isfinite(y)
+        ax.plot(x[valid], y[valid], marker="o", markersize=2, label=key)
+
     if loss_keys:
         ax = axes[axis_idx]
         for key in loss_keys:
-            ax.plot(steps, history[key], marker="o", markersize=2, label=key)
+            plot_series(ax, key)
         ax.set_xlabel("training step")
         ax.set_ylabel("loss")
         ax.grid(True)
@@ -192,7 +198,7 @@ def plot_step_curves(
     if acc_keys:
         ax = axes[axis_idx]
         for key in acc_keys:
-            ax.plot(steps, history[key], marker="o", markersize=2, label=key)
+            plot_series(ax, key)
         ax.set_xlabel("training step")
         ax.set_ylabel("accuracy")
         ax.set_ylim(0, 1)

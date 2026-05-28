@@ -215,3 +215,84 @@ Can target-domain K-shot prototype inference improve over zero-shot softmax pred
 Accuracy increases with K, which suggests the prototype evaluation is behaving sensibly: more enrollment windows produce more stable person prototypes. However, the improvement is modest. Small-K settings are weak, and even `K=100` reaches only about `34%` query accuracy.
 
 This indicates that the softmax-trained SHARP encoder is not a strong metric embedding model for few-shot prototype inference. The classifier was trained to separate known identities through a learned linear head, not to make same-person windows cluster tightly under cosine or Euclidean distance. This result strengthens the motivation for supervised contrastive training, where the objective directly optimizes embedding geometry for prototype-style inference.
+
+## 2026-05-27 - Prototypical Training With Raw SHARP Feature Maps
+
+### Question
+
+Does episodic prototypical training improve the SHARP representation when the embedding is the flattened SHARP feature map?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Train domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Source validation domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Target validation domain: `PI-4a`
+- Target validation protocol: target-domain enrollment support windows from `PI-4a`, target-domain query windows from held-out `PI-4a`
+- Model: SHARP multi-antenna model
+- Embedding: flattened pre-classifier SHARP convolutional feature maps
+- Objective: 10-way prototypical loss with cosine prototype logits
+- Episode shape: `K=5` support windows/person, `Q=10` query windows/person
+- Training length: about 4500 sampled prototypical steps
+
+### Result
+
+- Training loss decreased from about `2.30` to roughly `2.15`-`2.20`.
+- Training episodic accuracy improved above chance but remained noisy, mostly around `25%`-`35%`.
+- Source-domain episodic validation accuracy plateaued around `25%`-`30%`.
+- Target-domain episodic validation briefly reached about `50%`, then fell back and stabilized around `30%`.
+- Final K-shot comparison against the softmax embedding baseline was not completed for this diagnostic run.
+
+### Artifacts
+
+- Run directory: [experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260527_164722](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260527_164722)
+
+![Prototypical training without embedding head](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260527_164722/2026-05-27-no-embedding-head.png)
+
+### Interpretation
+
+This run showed that episodic training was not completely random: both loss and accuracy moved away from the 10-way chance baseline. However, the improvement was weak and unstable. The raw flattened SHARP feature map is likely a poor metric-learning space because it is high-dimensional and was originally designed for activity-classification logits, not for compact identity clustering.
+
+The target-domain validation curve should not be interpreted as zero-shot generalization, because target prototypes are built from `PI-4a` enrollment windows. The temporary target-domain spike suggests that some identity structure exists in the Doppler features, but the representation did not settle into a robust prototype space. This motivated adding an explicit projection head.
+
+## 2026-05-28 - Prototypical Training With 128-D Embedding Head
+
+### Question
+
+Does adding a trainable 128-D projection head after the SHARP backbone produce a better prototypical identity embedding?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Train domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Source validation domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Target validation domain: `PI-4a`
+- Model: SHARP backbone with multi-antenna encoder
+- Embedding head: `Flatten -> LazyLinear(256) -> ReLU -> Dropout -> Linear(128)`
+- Embedding normalization: enabled
+- Fusion: mean of antenna embeddings
+- Objective: 10-way prototypical loss with cosine prototype logits
+- Episode shape: `K=5` support windows/person, `Q=16` query windows/person
+- Training length: 3000 sampled prototypical steps
+
+### Result
+
+- Training loss decreased more clearly than in the raw-feature run, reaching roughly `2.0` by the end.
+- Source-domain validation loss also decreased, reaching roughly `2.05`-`2.10`.
+- Target-domain validation loss decreased but remained noisy.
+- Episodic train/source/target accuracies stayed low, mostly around `20%`-`30%`.
+- The final K-shot comparison against the softmax embedding baseline crashed due to memory pressure, so this run is not a complete method comparison.
+
+### Artifacts
+
+- Run directory: [experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260527_164722](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260527_164722)
+
+![Prototypical training with embedding head](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260527_164722/2026-05-28-with-embedding-head.png)
+
+### Interpretation
+
+The projection head improved the loss behavior, which suggests the model was learning a more suitable embedding space than the raw feature-map baseline. However, the accuracy curves did not improve enough to make this a strong result by themselves. The gap between decreasing loss and weak accuracy may come from compressed cosine logits: cosine similarities are bounded in `[-1, 1]`, so cross-entropy may receive a weak class-separation signal unless logits are temperature-scaled.
+
+This run suggests that architecture alone is not sufficient. The next prototypical run should save the trained model before K-shot evaluation, reduce memory pressure during evaluation, and test temperature-scaled prototype logits such as `temperature=0.1`.
