@@ -18,6 +18,70 @@ Current baseline:
 
 Rationale: the model is evaluated using all four antennas, so optimizing the fused output is more consistent than optimizing each antenna as a standalone classifier.
 
+## Protocol Definitions
+
+The word "domain" can refer to two different things in these experiments, so we define the evaluation protocols explicitly.
+
+### Zero-Shot Cross-Domain Classification
+
+Train a classifier on source domains and directly classify windows from a held-out target domain:
+
+```text
+train: PI-1a, PI-2a, PI-3a
+test:  PI-4a
+```
+
+No target-domain enrollment examples are used. This is the strictest domain-transfer setting for the softmax classifier.
+
+### Same-Domain K-Shot Enrollment
+
+Build prototypes and query examples from the same PI domain:
+
+```text
+enrollment: PI-4a split 0.0-0.6
+query:      PI-4a split 0.6-0.8
+```
+
+This is not zero-shot domain generalization. It is a few-shot enrollment protocol: the model is allowed to see `K` examples per person from the target domain before classifying target-domain query windows. This is still a valid person-identification setting because enrollment is realistic in PI.
+
+### Mixed-Source K-Shot Enrollment
+
+Build each person prototype from a pooled source-domain enrollment set and evaluate on a pooled source-domain query set:
+
+```text
+enrollment: PI-1a, PI-2a, PI-3a split 0.0-0.6
+query:      PI-1a, PI-2a, PI-3a split 0.6-0.8
+```
+
+This tests whether one prototype per identity remains stable across multiple source Wi-Fi configurations. It is harder than same-domain K-shot because a single prototype may average together domain-specific embedding clusters.
+
+### Cross-Domain K-Shot Without Target Enrollment
+
+Build prototypes from source-domain enrollment samples and classify query samples from a different target domain:
+
+```text
+enrollment: PI-1a, PI-2a, PI-3a
+query:      PI-4a
+```
+
+This is the hardest metric-learning protocol. It tests whether identity embeddings are domain-invariant without target-domain enrollment. We have not yet used this as the main metric.
+
+### Current Interpretation
+
+The previous strong `PI-4a` K-shot result should be described as:
+
+```text
+few-shot enrollment in an unseen target domain
+```
+
+It should not be described as:
+
+```text
+zero-shot cross-domain generalization
+```
+
+The distinction matters because the `PI-4a` prototypes are also built from `PI-4a` samples, so the prototype step adapts to the held-out domain.
+
 ## 2026-05-25 - 5-Person Same-Domain Sharp Model Mean Fusion
 
 ### Question
@@ -296,3 +360,211 @@ Does adding a trainable 128-D projection head after the SHARP backbone produce a
 The projection head improved the loss behavior, which suggests the model was learning a more suitable embedding space than the raw feature-map baseline. However, the accuracy curves did not improve enough to make this a strong result by themselves. The gap between decreasing loss and weak accuracy may come from compressed cosine logits: cosine similarities are bounded in `[-1, 1]`, so cross-entropy may receive a weak class-separation signal unless logits are temperature-scaled.
 
 This run suggests that architecture alone is not sufficient. The next prototypical run should save the trained model before K-shot evaluation, reduce memory pressure during evaluation, and test temperature-scaled prototype logits such as `temperature=0.1`.
+
+## 2026-05-28 - Prototypical Training With 128-D Head, Temperature Scaling, Early Stopping
+
+### Question
+
+Does temperature scaling and best-checkpoint selection make the 128-D prototypical encoder competitive with the softmax feature-map embedding baseline?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Train domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Source validation domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Target validation domain: `PI-4a`
+- Model: SHARP backbone with multi-antenna encoder
+- Embedding head: `Flatten -> LazyLinear(256) -> ReLU -> Dropout -> Linear(128)`
+- Embedding normalization: enabled
+- Fusion: mean of antenna embeddings
+- Objective: 10-way prototypical loss with cosine prototype logits
+- Temperature: `0.1`
+- Episode shape: `K=5` support windows/person, `Q=16` query windows/person
+- Maximum training length: 3000 sampled prototypical steps
+- Early stopping metric: `proto_source_val_acc`
+- Best checkpoint: step `1900`
+
+### Result
+
+Training did improve compared with random guessing, but the final embedding was weak.
+
+- Best source validation episodic accuracy: `0.3059` at step `1900`
+- Final target validation episodic accuracy: about `0.2925`
+- Train episodic accuracy remained noisy and mostly below `40%`
+- The model stopped early after the source validation metric stopped improving
+
+Target-domain same-domain K-shot evaluation on `PI-4a`:
+
+| K enrollment windows/person | Softmax feature-map mean acc | Proto 128-D mean acc |
+| ---: | ---: | ---: |
+| 1 | `0.2046` | `0.2735` |
+| 3 | `0.2517` | `0.2753` |
+| 5 | `0.2765` | `0.2621` |
+| 10 | `0.3044` | `0.2685` |
+| 25 | `0.3248` | `0.2684` |
+| 50 | `0.3269` | `0.2601` |
+| 100 | `0.3416` | `0.2626` |
+
+### Artifacts
+
+- Run directory: [experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260528_184419](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260528_184419)
+
+![128-D prototypical training curves](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260528_184419/proto_training_curves.png)
+
+![128-D prototypical K-shot comparison](../experiments/few_shot_proto_evaluation/proto_multi_antenna_vs_softmax_baseline_20260528_184419/pi_few_shot_proto_vs_softmax_accuracy.png)
+
+### Interpretation
+
+This run is worse than expected. Temperature scaling helped the loss become more usable, but it did not produce a strong identity embedding. The 128-D prototypical model only beats the softmax feature-map baseline for `K=1` and `K=3`; after that, increasing enrollment size does not improve the prototype, and the curve stays around `26%`-`28%`.
+
+This suggests that the learned 128-D space is not centered around person identity. More enrollment samples do not produce a cleaner prototype, which is a key failure signal for prototype inference.
+
+A likely architectural issue is that the projection head is much larger than intended. The flattened SHARP feature map has dimension `25500`, so the projection head has about `6.56M` parameters:
+
+```text
+Flatten(25500) -> Linear(256) -> Linear(128)
+```
+
+By comparison, the previous softmax classifier head only maps `25500 -> 10`, around `255k` parameters. The new projection head may be over-parameterized and may compress away the useful high-dimensional feature-map geometry.
+
+## 2026-05-28 - Source-Domain K-Shot Diagnostic
+
+### Question
+
+Do the prototype embeddings fail even before the held-out `PI-4a` domain shift, or is the failure mainly caused by target-domain transfer?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Evaluation protocol: mixed-source K-shot enrollment
+- Enrollment domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Query domains: `PI-1a`, `PI-2a`, `PI-3a`
+- Enrollment split: `0.0`-`0.6`
+- Query split: `0.6`-`0.8`
+- Compared embeddings:
+  - softmax-trained SHARP feature maps
+  - old prototypical model using raw SHARP feature maps
+  - new prototypical model using the 128-D projection head
+
+### Result
+
+| K enrollment windows/person | Softmax feature maps | Old proto feature maps | New proto 128-D encoder |
+| ---: | ---: | ---: | ---: |
+| 1 | `0.1727` | `0.2361` | `0.2181` |
+| 3 | `0.2346` | `0.2547` | `0.2691` |
+| 5 | `0.2390` | `0.2715` | `0.2712` |
+| 10 | `0.2499` | `0.2702` | `0.2889` |
+| 25 | `0.2800` | `0.2672` | `0.2905` |
+| 50 | `0.2988` | `0.2684` | `0.2980` |
+| 100 | `0.2949` | `0.2629` | `0.3014` |
+
+### Artifacts
+
+- Run directory: [experiments/few_shot_source_domain_evaluation/source_domain_featuremap_vs_projection_20260528_200640](../experiments/few_shot_source_domain_evaluation/source_domain_featuremap_vs_projection_20260528_200640)
+- Notebook: [notebooks/PI_few_shot_source_domain_check.ipynb](../notebooks/PI_few_shot_source_domain_check.ipynb)
+
+![Source-domain K-shot comparison](../experiments/few_shot_source_domain_evaluation/source_domain_featuremap_vs_projection_20260528_200640/source_domain_kshot_comparison.png)
+
+### Interpretation
+
+All three curves are close together and remain low. This initially looked inconsistent with the previous old-proto `PI-4a` K-shot result, where the old raw-feature prototypical model reached about `63%` at `K=100`.
+
+The difference is the evaluation protocol.
+
+The previous strong result used same-domain target enrollment:
+
+```text
+enrollment: PI-4a split 0.0-0.6
+query:      PI-4a split 0.6-0.8
+```
+
+This lets the prototype adapt to the target domain. The new source-domain diagnostic pools several source domains into one enrollment/query pool:
+
+```text
+enrollment: PI-1a, PI-2a, PI-3a split 0.0-0.6
+query:      PI-1a, PI-2a, PI-3a split 0.6-0.8
+```
+
+Therefore each identity prototype may average embeddings from multiple Wi-Fi configurations. If the representation is domain-fragmented, one person may form separate clusters in `PI-1a`, `PI-2a`, and `PI-3a`. Averaging those clusters into one prototype can hurt accuracy.
+
+This means the `PI-4a` result is not wrong, but it answers a different and easier question:
+
+```text
+Given K enrollment samples from a new target Wi-Fi setup, can we classify later samples from that same setup?
+```
+
+The mixed-source diagnostic asks:
+
+```text
+Can one prototype per person survive multiple source Wi-Fi configurations at once?
+```
+
+The answer so far appears to be mostly no. This is useful for the report because it suggests the embeddings contain identity information, but identity is entangled with domain/setup effects.
+
+### Next Diagnostic
+
+Run per-domain same-domain K-shot evaluation:
+
+```text
+PI-1a enrollment -> PI-1a query
+PI-2a enrollment -> PI-2a query
+PI-3a enrollment -> PI-3a query
+PI-4a enrollment -> PI-4a query
+```
+
+If per-domain results are high but mixed-domain results are low, the main issue is domain-fragmented identity clusters. If per-domain results are also low, the metric embedding itself is weak.
+
+## 2026-05-28 - Per-Domain Same-Domain K-Shot Diagnostic
+
+### Question
+
+Are the low mixed-source K-shot results caused by weak identity embeddings in every domain, or by averaging domain-specific clusters into one pooled prototype?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Evaluation protocol: same-domain K-shot enrollment, evaluated separately per PI domain
+- Domains tested: `PI-1a`, `PI-2a`, `PI-3a`, `PI-4a`
+- Enrollment split: `0.0`-`0.6`
+- Query split: `0.6`-`0.8`
+- Compared embeddings:
+  - softmax-trained SHARP feature maps
+  - old prototypical model using raw SHARP feature maps
+  - new prototypical model using the 128-D projection head
+
+### Result
+
+Best `K=100` same-domain query accuracies:
+
+| Domain | Softmax feature maps | Old proto feature maps | New proto 128-D encoder |
+| --- | ---: | ---: | ---: |
+| `PI-1a` | `0.4298` | `0.8670` | `0.3356` |
+| `PI-2a` | `0.4028` | `0.7746` | `0.3463` |
+| `PI-3a` | `0.3505` | `0.6294` | `0.4652` |
+| `PI-4a` | `0.3416` | `0.6307` | `0.2626` |
+
+### Artifacts
+
+- Run directory: [experiments/few_shot_per_domain_evaluation/per_domain_featuremap_vs_projection_20260528_204514](../experiments/few_shot_per_domain_evaluation/per_domain_featuremap_vs_projection_20260528_204514)
+
+![Per-domain K-shot comparison](../experiments/few_shot_per_domain_evaluation/per_domain_featuremap_vs_projection_20260528_204514/per_domain_kshot_comparison.png)
+
+### Interpretation
+
+This diagnostic resolves the apparent contradiction from the mixed-source experiment. The old raw-feature prototypical model performs strongly when enrollment and query come from the same PI domain: it reaches about `87%` on `PI-1a`, `77%` on `PI-2a`, `63%` on `PI-3a`, and `63%` on `PI-4a` at `K=100`.
+
+However, the same model performed poorly in the mixed-source diagnostic, where each prototype averaged samples from `PI-1a`, `PI-2a`, and `PI-3a` together. This strongly suggests that the learned embedding contains person information, but person clusters are fragmented by Wi-Fi domain. In other words, the model can identify people after same-domain enrollment, but a single prototype does not represent one person cleanly across different PI configurations.
+
+The new 128-D projection-head model is not competitive here. It stays mostly flat and low, except for moderate performance on `PI-3a`. This supports the earlier suspicion that the large projection head compressed or distorted useful feature-map geometry instead of improving it.
+
+For the project narrative, the old prototypical feature-map model is currently the strongest few-shot baseline. The important finding is not simply "prototype training works"; it is more specific:
+
+```text
+same-domain few-shot enrollment works well,
+but mixed-domain prototypes expose domain-fragmented identity embeddings.
+```
+
+The next method should therefore target domain-stable identity embeddings, most likely through supervised contrastive learning and/or a smaller pooled projection head rather than the current large flatten MLP.
