@@ -160,9 +160,13 @@ def prototypical_loss(
     device: str | torch.device,
     embedding_fusion: str = "mean",
     metric: str = "cosine",
+    temperature: float = 1.0,
     normalize_prototypes: bool = True,
 ) -> tuple[torch.Tensor, float]:
     """Compute prototypical loss and query accuracy for one episode."""
+    if temperature <= 0:
+        raise ValueError(f"temperature must be positive, got {temperature}.")
+
     support_x = episode.support_x.to(device)
     support_y = episode.support_y.to(device)
     query_x = episode.query_x.to(device)
@@ -176,7 +180,7 @@ def prototypical_loss(
         support_y,
         normalize=normalize_prototypes,
     )
-    logits = prototype_logits(query_embeddings, prototypes, metric=metric)
+    logits = prototype_logits(query_embeddings, prototypes, metric=metric) / temperature
     targets = map_labels_to_prototype_indices(query_y, prototype_labels)
 
     loss = F.cross_entropy(logits, targets)
@@ -197,6 +201,7 @@ def run_prototypical_steps(
     rng: np.random.Generator,
     embedding_fusion: str = "mean",
     metric: str = "cosine",
+    temperature: float = 1.0,
 ) -> dict[str, float]:
     """Train for a fixed number of sampled prototypical episodes."""
     model.train()
@@ -219,6 +224,7 @@ def run_prototypical_steps(
             device=device,
             embedding_fusion=embedding_fusion,
             metric=metric,
+            temperature=temperature,
         )
         loss.backward()
         optimizer.step()
