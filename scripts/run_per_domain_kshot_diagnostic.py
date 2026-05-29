@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+import json
 from pathlib import Path
 import sys
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 
 
@@ -24,6 +26,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", default="model_kshot_protocol_comparison")
     parser.add_argument("--pooled-proto-checkpoint", type=Path, default=None)
     parser.add_argument("--raw-csi-proto-checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--reuse-results",
+        type=Path,
+        default=None,
+        help="Optional previous kshot_model_comparison_results.json to reuse.",
+    )
+    parser.add_argument(
+        "--protocols",
+        nargs="+",
+        choices=["mixed_source", "per_domain"],
+        default=["mixed_source", "per_domain"],
+        help="Protocols to include in this run. Only these protocols are saved and plotted.",
+    )
+    parser.add_argument(
+        "--models-to-run",
+        nargs="+",
+        default=None,
+        help="Optional model keys to include. By default, all models are included.",
+    )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Do not run any model evaluation; only regenerate plots from --reuse-results.",
+    )
     return parser.parse_args()
 
 
@@ -221,18 +247,87 @@ def main() -> None:
     run_dir = create_run_dir(project_root, run_group, args.run_name)
     print("run directory:", run_dir)
 
+    reused_payload = None
+    results = {}
+    if args.reuse_results is not None:
+        with args.reuse_results.open("r", encoding="utf-8") as f:
+            reused_payload = json.load(f)
+        print("reusing results from:", args.reuse_results)
+
+    previous_checkpoints = {}
+    previous_results = {}
+    if reused_payload is not None:
+        previous_checkpoints = reused_payload.get("config", {}).get("checkpoints", {})
+        previous_results = reused_payload.get("results", {})
+    previous_config = reused_payload.get("config", {}) if reused_payload is not None else {}
+    previous_selected_protocols = previous_config.get("selected_protocols")
+    previous_protocols_computed = previous_config.get("protocols_computed")
+
+    current_checkpoints = {
+        key: str(Path(model_info["checkpoint"]).resolve())
+        for key, model_info in models.items()
+    }
+    selected_protocols = list(dict.fromkeys(args.protocols))
+    selected_models = list(models) if args.models_to_run is None else args.models_to_run
+    unknown_models = sorted(set(selected_models) - set(models))
+    if unknown_models:
+        raise ValueError(f"Unknown model keys: {unknown_models}. Available: {sorted(models)}")
+
+    if args.plot_only and args.reuse_results is None:
+        raise ValueError("--plot-only requires --reuse-results.")
+
+    def checkpoint_matches_cache(model_key: str) -> bool:
+        previous = previous_checkpoints.get(model_key)
+        if previous is None:
+            return False
+        return Path(previous).resolve() == Path(current_checkpoints[model_key]).resolve()
+
+    def cache_file_contains_protocol(protocol_name: str) -> bool:
+        """Avoid trusting old partial-cache files for protocols they did not compute."""
+        top_level_protocol = "per_domain" if protocol_name.startswith("per_domain:") else protocol_name
+        if previous_selected_protocols is not None:
+            return top_level_protocol in previous_selected_protocols
+        if previous_protocols_computed is not None:
+            return top_level_protocol in previous_protocols_computed
+        return True
+
+    def cached_model_results(protocol_name: str, model_key: str) -> dict | None:
+        if not cache_file_contains_protocol(protocol_name):
+            return None
+        if not checkpoint_matches_cache(model_key):
+            return None
+        if protocol_name == "mixed_source":
+            return previous_results.get("mixed_source", {}).get(model_key)
+        if protocol_name.startswith("per_domain:"):
+            domain = protocol_name.split(":", maxsplit=1)[1]
+            return previous_results.get("per_domain", {}).get(domain, {}).get(model_key)
+        raise ValueError(f"Unknown protocol cache key: {protocol_name}")
+
     def evaluate_protocol(
-        protocol_name: str,
+        title: str,
         *,
+        cache_key: str,
         enrollment_domains: Sequence[str],
         query_domains: Sequence[str],
     ) -> dict[str, dict[int, dict[str, float | list[float]]]]:
-        print(f"\n=== {protocol_name} ===")
+        print(f"\n=== {title} ===")
         print("enrollment domains:", list(enrollment_domains))
         print("query domains:", list(query_domains))
 
         protocol_results = {}
-        for model_key, model_info in models.items():
+        for model_key in selected_models:
+            model_info = models[model_key]
+            cached = cached_model_results(cache_key, model_key)
+            if cached is not None:
+                print(f"reusing {model_info['label']}")
+                protocol_results[model_key] = cached
+                continue
+            if args.plot_only:
+                raise ValueError(
+                    f"--plot-only cannot build {cache_key}/{model_key}: "
+                    "no cache entry with the current checkpoint."
+                )
+
             if model_info["representation"] == "raw_csi":
                 enrollment_dataset = RawCsiWindowDataset(
                     raw_csi_dir,
@@ -295,20 +390,32 @@ def main() -> None:
             query_dataset.clear_cache()
         return protocol_results
 
-    results = {
-        "mixed_source": evaluate_protocol(
+    provenance = {}
+    if "mixed_source" in selected_protocols:
+        results["mixed_source"] = evaluate_protocol(
             "mixed-source K-shot",
+            cache_key="mixed_source",
             enrollment_domains=source_domains,
             query_domains=source_domains,
-        ),
-        "per_domain": {},
-    }
-    for domain in all_domains:
-        results["per_domain"][domain] = evaluate_protocol(
-            f"{domain} same-domain K-shot",
-            enrollment_domains=[domain],
-            query_domains=[domain],
         )
+        provenance["mixed_source"] = {
+            model_key: "cache" if cached_model_results("mixed_source", model_key) is not None else "computed"
+            for model_key in selected_models
+        }
+    if "per_domain" in selected_protocols:
+        results["per_domain"] = {}
+        provenance["per_domain"] = {}
+        for domain in all_domains:
+            results["per_domain"][domain] = evaluate_protocol(
+                f"{domain} same-domain K-shot",
+                cache_key=f"per_domain:{domain}",
+                enrollment_domains=[domain],
+                query_domains=[domain],
+            )
+            provenance["per_domain"][domain] = {
+                model_key: "cache" if cached_model_results(f"per_domain:{domain}", model_key) is not None else "computed"
+                for model_key in selected_models
+            }
 
     styles = {
         "softmax_featuremap": {"marker": "o"},
@@ -318,10 +425,16 @@ def main() -> None:
         "raw_csi_proto": {"marker": "P"},
     }
 
+    def k_result(model_results: dict, k: int) -> dict:
+        return model_results[k] if k in model_results else model_results[str(k)]
+
     def plot_protocol(ax, protocol_results, *, title: str, ylabel: str):
-        for model_key, model_info in models.items():
-            means = [protocol_results[model_key][k]["mean"] for k in k_values]
-            stds = [protocol_results[model_key][k]["std"] for k in k_values]
+        for model_key in selected_models:
+            model_info = models[model_key]
+            if model_key not in protocol_results:
+                raise ValueError(f"Missing {model_key} results for plot {title!r}.")
+            means = [k_result(protocol_results[model_key], k)["mean"] for k in k_values]
+            stds = [k_result(protocol_results[model_key], k)["std"] for k in k_values]
             ax.errorbar(
                 k_values,
                 means,
@@ -339,44 +452,90 @@ def main() -> None:
         ax.set_ylim(0, 1)
         ax.grid(True, which="both")
 
-    mixed_fig, mixed_ax = plt.subplots(figsize=(8, 4.5))
-    plot_protocol(
-        mixed_ax,
-        results["mixed_source"],
-        title="Mixed-source K-shot: PI-1a/2a/3a pooled",
-        ylabel="mixed-source query accuracy",
-    )
-    mixed_ax.legend()
-    mixed_fig.tight_layout()
-    mixed_plot_path = save_figure(mixed_fig, run_dir, "mixed_source_kshot_comparison.png")
+    def plot_source_domain_average(ax):
+        for model_key in selected_models:
+            model_info = models[model_key]
+            if any(model_key not in results["per_domain"].get(domain, {}) for domain in source_domains):
+                raise ValueError(f"Missing {model_key} results for source same-domain average plot.")
 
-    target_fig, target_ax = plt.subplots(figsize=(8, 4.5))
-    plot_protocol(
-        target_ax,
-        results["per_domain"]["PI-4a"],
-        title="Target same-domain K-shot: PI-4a",
-        ylabel="PI-4a query accuracy",
-    )
-    target_ax.legend()
-    target_fig.tight_layout()
-    target_plot_path = save_figure(target_fig, run_dir, "target_pi4_kshot_comparison.png")
+            means = []
+            domain_stds = []
+            for k in k_values:
+                domain_means = [
+                    k_result(results["per_domain"][domain][model_key], k)["mean"]
+                    for domain in source_domains
+                ]
+                means.append(float(np.mean(domain_means)))
+                domain_stds.append(float(np.std(domain_means)))
 
-    per_domain_fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True, sharey=True)
-    for ax, domain in zip(axes.flat, all_domains, strict=True):
+            ax.errorbar(
+                k_values,
+                means,
+                yerr=domain_stds,
+                marker=styles[model_key]["marker"],
+                capsize=3,
+                label=model_info["label"],
+            )
+        ax.set_title("Source same-domain K-shot: PI-1a/2a/3a average")
+        ax.set_xscale("log")
+        ax.set_xticks(k_values)
+        ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+        ax.set_xlabel("K enrollment windows per person")
+        ax.set_ylabel("source same-domain query accuracy")
+        ax.set_ylim(0, 1)
+        ax.grid(True, which="both")
+
+    plot_paths = {}
+    if "mixed_source" in selected_protocols:
+        mixed_fig, mixed_ax = plt.subplots(figsize=(8, 4.5))
         plot_protocol(
-            ax,
-            results["per_domain"][domain],
-            title=domain,
-            ylabel="same-domain query accuracy",
+            mixed_ax,
+            results["mixed_source"],
+            title="Mixed-source K-shot: PI-1a/2a/3a pooled",
+            ylabel="mixed-source query accuracy",
         )
-    for ax in axes.flat:
-        ax.set_xlabel("K")
-        ax.set_ylabel("accuracy")
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    per_domain_fig.legend(handles, labels, loc="upper center", ncol=2)
-    per_domain_fig.suptitle("Per-domain same-domain K-shot PI diagnostic", y=0.98)
-    per_domain_fig.tight_layout(rect=(0, 0, 1, 0.9))
-    per_domain_plot_path = save_figure(per_domain_fig, run_dir, "per_domain_kshot_comparison.png")
+        mixed_ax.legend()
+        mixed_fig.tight_layout()
+        plot_paths["mixed_source"] = save_figure(mixed_fig, run_dir, "mixed_source_kshot_comparison.png")
+
+    if "per_domain" in selected_protocols:
+        target_fig, target_ax = plt.subplots(figsize=(8, 4.5))
+        plot_protocol(
+            target_ax,
+            results["per_domain"]["PI-4a"],
+            title="Target same-domain K-shot: PI-4a",
+            ylabel="PI-4a query accuracy",
+        )
+        target_ax.legend()
+        target_fig.tight_layout()
+        plot_paths["target_pi4"] = save_figure(target_fig, run_dir, "target_pi4_kshot_comparison.png")
+
+        source_avg_fig, source_avg_ax = plt.subplots(figsize=(8, 4.5))
+        plot_source_domain_average(source_avg_ax)
+        source_avg_ax.legend()
+        source_avg_fig.tight_layout()
+        plot_paths["source_same_domain_average"] = save_figure(
+            source_avg_fig,
+            run_dir,
+            "source_same_domain_average_kshot_comparison.png",
+        )
+
+        per_domain_fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True, sharey=True)
+        for ax, domain in zip(axes.flat, all_domains, strict=True):
+            plot_protocol(
+                ax,
+                results["per_domain"][domain],
+                title=domain,
+                ylabel="same-domain query accuracy",
+            )
+        for ax in axes.flat:
+            ax.set_xlabel("K")
+            ax.set_ylabel("accuracy")
+        handles, labels = axes[0, 0].get_legend_handles_labels()
+        per_domain_fig.legend(handles, labels, loc="upper center", ncol=2)
+        per_domain_fig.suptitle("Per-domain same-domain K-shot PI diagnostic", y=0.98)
+        per_domain_fig.tight_layout(rect=(0, 0, 1, 0.9))
+        plot_paths["per_domain"] = save_figure(per_domain_fig, run_dir, "per_domain_kshot_comparison.png")
 
     config = {
         "doppler_dir": doppler_dir,
@@ -395,27 +554,26 @@ def main() -> None:
         "embedding_fusion": embedding_fusion,
         "metric": metric,
         "checkpoints": {
-            key: model_info["checkpoint"]
-            for key, model_info in models.items()
+            key: current_checkpoints[key]
+            for key in selected_models
         },
+        "reused_results": args.reuse_results,
+        "selected_protocols": selected_protocols,
+        "selected_models": selected_models,
+        "result_provenance": provenance,
     }
     results_path = save_json(
         run_dir / "kshot_model_comparison_results.json",
         {
             "config": config,
             "results": results,
-            "plots": {
-                "mixed_source": mixed_plot_path,
-                "target_pi4": target_plot_path,
-                "per_domain": per_domain_plot_path,
-            },
+            "plots": plot_paths,
         },
     )
 
     print("\nplots:")
-    print("  mixed source:", mixed_plot_path)
-    print("  target PI-4a:", target_plot_path)
-    print("  per domain:", per_domain_plot_path)
+    for name, path in plot_paths.items():
+        print(f"  {name}: {path}")
     print("results:", results_path)
 
 
