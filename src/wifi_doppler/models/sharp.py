@@ -128,6 +128,61 @@ class SharpSingleAntennaEncoder(torch.nn.Module):
         return self.forward_embedding(x)
 
 
+class SharpPooledSingleAntennaEncoder(torch.nn.Module):
+    """SHARP backbone plus a compact pooled projection head.
+
+    The flattened SHARP feature map has 25,500 values for the current
+    340x100 Doppler windows. Pooling before projection keeps this encoder much
+    smaller than the legacy flatten-MLP encoder while preserving coarse
+    time/Doppler layout.
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int = 128,
+        pool_size: tuple[int, int] = (10, 10),
+        hidden_dim: int | None = None,
+        dropout: float = 0.0,
+        normalize: bool = True,
+        backbone: SharpBackbone | None = None,
+    ):
+        super().__init__()
+        self.backbone = backbone if backbone is not None else SharpBackbone()
+        self.normalize = normalize
+        self.pool_size = pool_size
+
+        layers: list[torch.nn.Module] = [
+            torch.nn.AdaptiveAvgPool2d(pool_size),
+            torch.nn.Flatten(start_dim=1),
+        ]
+        pooled_dim = 3 * pool_size[0] * pool_size[1]
+        if hidden_dim is None:
+            layers.append(torch.nn.Linear(pooled_dim, embedding_dim))
+        else:
+            layers.extend(
+                [
+                    torch.nn.Linear(pooled_dim, hidden_dim),
+                    torch.nn.ReLU(),
+                ]
+            )
+            if dropout > 0:
+                layers.append(torch.nn.Dropout(p=dropout))
+            layers.append(torch.nn.Linear(hidden_dim, embedding_dim))
+        self.projection = torch.nn.Sequential(*layers)
+
+    def forward_feature_maps(self, x):
+        return self.backbone(x)
+
+    def forward_embedding(self, x):
+        embeddings = self.projection(self.forward_feature_maps(x))
+        if self.normalize:
+            embeddings = F.normalize(embeddings, dim=1)
+        return embeddings
+
+    def forward(self, x):
+        return self.forward_embedding(x)
+
+
 class MultiAntennaClassifier(torch.nn.Module):
     """Apply one shared single-antenna classifier to each antenna stream."""
 
@@ -209,6 +264,41 @@ def fuse_antennas(values: torch.Tensor, fusion: str):
     if fusion == "concat":
         return values.flatten(start_dim=1)
     raise ValueError(f"Unknown fusion method: {fusion}")
+
+
+def build_sharp_single_antenna_encoder(
+    encoder_type: str = "pooled",
+    *,
+    embedding_dim: int = 128,
+    hidden_dim: int | None = None,
+    pool_size: tuple[int, int] = (10, 10),
+    dropout: float = 0.0,
+    normalize: bool = True,
+    backbone: SharpBackbone | None = None,
+) -> torch.nn.Module:
+    """Build a SHARP single-antenna encoder for metric-learning experiments."""
+    if encoder_type == "pooled":
+        return SharpPooledSingleAntennaEncoder(
+            embedding_dim=embedding_dim,
+            pool_size=pool_size,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            normalize=normalize,
+            backbone=backbone,
+        )
+
+    if encoder_type == "flatten_mlp":
+        if hidden_dim is None:
+            raise ValueError("hidden_dim is required for encoder_type='flatten_mlp'.")
+        return SharpSingleAntennaEncoder(
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            normalize=normalize,
+            backbone=backbone,
+        )
+
+    raise ValueError(f"Unknown SHARP encoder type: {encoder_type!r}.")
 
 
 SingleAntennaModel = SharpLegacySingleAntennaClassifier

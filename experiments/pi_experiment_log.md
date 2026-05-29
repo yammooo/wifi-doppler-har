@@ -568,3 +568,198 @@ but mixed-domain prototypes expose domain-fragmented identity embeddings.
 ```
 
 The next method should therefore target domain-stable identity embeddings, most likely through supervised contrastive learning and/or a smaller pooled projection head rather than the current large flatten MLP.
+
+## 2026-05-29 - Pooled-Head Prototypical Model Comparison
+
+### Question
+
+Does replacing the large flatten-MLP projection head with a compact pooled projection head improve the prototypical embedding?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Persons: all 10 PI identities, `p03`, `p05`-`p13`
+- Evaluation protocols:
+  - mixed-source K-shot: `PI-1a`, `PI-2a`, `PI-3a` pooled
+  - per-domain same-domain K-shot: `PI-1a`, `PI-2a`, `PI-3a`, `PI-4a`
+- Enrollment split: `0.0`-`0.6`
+- Query split: `0.6`-`0.8`
+- Trials per K: `20`
+- Compared embeddings:
+  - softmax-trained SHARP feature maps
+  - old prototypical model using raw SHARP feature maps
+  - prototypical model with large flatten-MLP 128-D head
+  - prototypical model with compact pooled 128-D head
+
+The pooled head is architecturally cleaner than the large flatten-MLP head:
+
+```text
+SHARP feature map [3, 170, 50]
+-> AdaptiveAvgPool2d((10, 10))
+-> Flatten(300)
+-> Linear(300 -> 128)
+-> normalize
+```
+
+This reduces the projection head from about `6.56M` parameters to `38,528` parameters.
+
+### Mixed-Source Result
+
+Mixed-source K-shot means one prototype per person is built from pooled `PI-1a`, `PI-2a`, and `PI-3a` enrollment samples, then evaluated on pooled held-out source query windows.
+
+| K | Softmax feature maps | Old proto feature maps | Flatten-MLP proto 128-D | Pooled-head proto 128-D |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | `0.1727` | `0.2361` | `0.2181` | `0.2108` |
+| 3 | `0.2346` | `0.2547` | `0.2691` | `0.2563` |
+| 5 | `0.2390` | `0.2715` | `0.2712` | `0.2675` |
+| 10 | `0.2499` | `0.2702` | `0.2889` | `0.2727` |
+| 25 | `0.2800` | `0.2672` | `0.2905` | `0.2852` |
+| 50 | `0.2988` | `0.2684` | `0.2980` | `0.2836` |
+| 100 | `0.2949` | `0.2629` | `0.3014` | `0.2804` |
+
+### Same-Domain K=100 Result
+
+| Domain | Softmax feature maps | Old proto feature maps | Flatten-MLP proto 128-D | Pooled-head proto 128-D |
+| --- | ---: | ---: | ---: | ---: |
+| `PI-1a` | `0.4298` | `0.8670` | `0.3356` | `0.4805` |
+| `PI-2a` | `0.4028` | `0.7746` | `0.3463` | `0.2322` |
+| `PI-3a` | `0.3505` | `0.6294` | `0.4652` | `0.3565` |
+| `PI-4a` | `0.3416` | `0.6307` | `0.2626` | `0.2324` |
+
+### Artifacts
+
+- Pooled-head training run: [experiments/few_shot_proto_evaluation/proto_pooled_head_vs_softmax_baseline_20260528_220334](../experiments/few_shot_proto_evaluation/proto_pooled_head_vs_softmax_baseline_20260528_220334)
+- Model comparison run: [experiments/few_shot_model_comparison/proto_model_comparison_with_pooled_head_20260529_20260529_091003](../experiments/few_shot_model_comparison/proto_model_comparison_with_pooled_head_20260529_20260529_091003)
+
+![Prototypical training with pooled head](../experiments/few_shot_proto_evaluation/proto_pooled_head_vs_softmax_baseline_20260528_220334/proto_training_curves.png)
+
+![Mixed-source K-shot model comparison](../experiments/few_shot_model_comparison/proto_model_comparison_with_pooled_head_20260529_20260529_091003/mixed_source_kshot_comparison.png)
+
+![Target PI-4a K-shot model comparison](../experiments/few_shot_model_comparison/proto_model_comparison_with_pooled_head_20260529_20260529_091003/target_pi4_kshot_comparison.png)
+
+![Per-domain K-shot model comparison](../experiments/few_shot_model_comparison/proto_model_comparison_with_pooled_head_20260529_20260529_091003/per_domain_kshot_comparison.png)
+
+### Interpretation
+
+The pooled head is more reasonable architecturally, and its training curves are somewhat cleaner than the large flatten-MLP head. However, the final few-shot results are still weak. In mixed-source K-shot, all methods remain clustered around `0.26`-`0.30`, so the pooled head does not solve the cross-domain prototype problem.
+
+For same-domain K-shot, the old raw-feature prototypical model remains clearly strongest. At `K=100`, it reaches `0.8670` on `PI-1a`, `0.7746` on `PI-2a`, `0.6294` on `PI-3a`, and `0.6307` on `PI-4a`. The pooled head only improves over the flatten-MLP head on `PI-1a`; it is worse on `PI-2a`, `PI-3a`, and `PI-4a`.
+
+This suggests that the useful identity information is present in the high-dimensional SHARP feature maps, but the learned compact projection heads are not preserving that geometry under prototypical training. The current evidence supports keeping the raw-feature prototypical model as the strongest few-shot baseline and moving away from prototypical-from-scratch head tuning.
+
+The stable project finding is now:
+
+```text
+Doppler feature maps support same-domain few-shot person enrollment,
+but compact learned prototype embeddings have not solved the domain-fragmentation problem.
+```
+
+The next method should be supervised contrastive learning or a raw CSI comparison, not further minor tuning of the prototypical head.
+
+## 2026-05-29 - UMAP Embedding Diagnostic
+
+### Question
+
+What structure do the learned embeddings contain: person identity, Wi-Fi domain/setup, or neither?
+
+### Setup
+
+- Data: `data/doppler_traces_pi`
+- Domains: `PI-1a`, `PI-2a`, `PI-3a`, `PI-4a`
+- Persons: all 10 PI identities
+- Sample: `75` windows per person per domain, `3000` windows total
+- Compared embeddings:
+  - old raw SHARP feature-map prototypical model
+  - pooled-head 128-D prototypical model
+- Dimensionality reduction:
+  - raw feature maps: `25500-D -> PCA 50-D -> UMAP 2-D`
+  - pooled head: `128-D -> PCA 50-D -> UMAP 2-D`
+- Plots:
+  - same UMAP coordinates colored by person
+  - same UMAP coordinates colored by domain
+
+### Artifacts
+
+- Run directory: [experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_102603](../experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_102603)
+- Script: [scripts/plot_embedding_umap.py](../scripts/plot_embedding_umap.py)
+
+![UMAP person/domain diagnostic](../experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_102603/embedding_umap_person_domain.png)
+
+### Interpretation
+
+The raw feature-map UMAP shows clear structure. When colored by domain, the largest visible regions are strongly associated with PI domain/setup. When colored by person, there are smaller local clusters and subclusters, but they are embedded inside larger domain-specific structures.
+
+This matches the K-shot results:
+
+```text
+same-domain K-shot works:
+  because within one domain, person subclusters are locally separable
+
+mixed-source K-shot fails:
+  because one person's samples are split across domain-specific regions
+```
+
+In other words, the raw SHARP feature maps appear to preserve person-specific information, but that information is entangled with Wi-Fi setup/domain effects. The representation is not naturally organized as one global cluster per person.
+
+The pooled-head UMAP is different. It mostly forms a large mixed cloud with weak visible person structure. It also does not show clean domain separation. This means the pooled head should not be interpreted as a good domain-invariant embedding. It is more likely a weak compressed representation that lost much of the useful high-dimensional structure from the raw feature maps.
+
+This explains why the pooled-head K-shot curve is poor in almost every setting. More enrollment samples do not help much because the embedding does not create stable person neighborhoods.
+
+### Why Domain Appears Without Domain Labels
+
+The model does not need explicit domain labels to encode domain information. Domain affects the Doppler input distribution directly through:
+
+- Tx/Rx geometry
+- monitor position
+- LOS/NLOS condition
+- receiver hardware
+- antenna response
+- residual multipath and noise profile
+- typical movement trajectories inside the room
+
+If `PI-1a` spectrograms look systematically different from `PI-4a` spectrograms, the SHARP feature extractor can preserve that difference even when the training objective is person identification.
+
+The person-ID objective says:
+
+```text
+separate people
+```
+
+It does not explicitly say:
+
+```text
+make the same person overlap across PI domains
+```
+
+Therefore the model can learn a representation shaped like:
+
+```text
+PI-1a region:
+  p03, p05, p06, ...
+
+PI-2a region:
+  p03, p05, p06, ...
+
+PI-3a region:
+  p03, p05, p06, ...
+```
+
+This can still support same-domain enrollment because the local person neighborhoods inside each domain are useful. However, it fails when a single prototype averages samples from multiple domains.
+
+### Consequence
+
+The UMAP result supports the current project interpretation:
+
+```text
+Doppler contains person-specific information,
+but the strongest visible structure in raw SHARP features is domain/setup.
+Person identity appears as local structure inside domain regions.
+Compact learned prototype heads have not produced a robust domain-invariant identity embedding.
+```
+
+This motivates either:
+
+- supervised contrastive learning with domain-balanced positive pairs, e.g. same person across different domains as positives
+- or a raw CSI comparison to test whether raw CSI preserves identity differently from Doppler
+
+It does not motivate further small tweaks to the current prototypical heads.

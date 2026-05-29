@@ -1,0 +1,41 @@
+{
+  "doppler_dir": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\data\\doppler_traces_pi",
+  "domains": [
+    "PI-1a",
+    "PI-2a",
+    "PI-3a",
+    "PI-4a"
+  ],
+  "persons": [
+    "p03",
+    "p05",
+    "p06",
+    "p07",
+    "p08",
+    "p09",
+    "p10",
+    "p11",
+    "p12",
+    "p13"
+  ],
+  "split": [
+    0.0,
+    0.8
+  ],
+  "window_size": 340,
+  "window_stride": 30,
+  "sample_per_person_domain": 75,
+  "sampled_windows": 3000,
+  "batch_size": 64,
+  "seed": 0,
+  "pca_components": 50,
+  "umap_neighbors": 30,
+  "umap_min_dist": 0.1,
+  "embedding_fusion": "mean",
+  "checkpoints": {
+    "raw_featuremap_proto": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\few_shot_proto_evaluation\\proto_multi_antenna_vs_softmax_baseline_20260527_164722\\proto_model.pt",
+    "pooled_head_proto": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\few_shot_proto_evaluation\\proto_pooled_head_vs_softmax_baseline_20260528_220334\\proto_model.pt"
+  },
+  "plot": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\embedding_umap\\raw_featuremap_vs_pooled_head_umap_20260529_102603\\embedding_umap_person_domain.png",
+  "coordinates": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\embedding_umap\\raw_featuremap_vs_pooled_head_umap_20260529_102603\\embedding_umap_coordinates.npz"
+}

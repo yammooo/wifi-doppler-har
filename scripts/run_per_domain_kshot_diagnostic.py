@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from pathlib import Path
 import sys
 
@@ -15,11 +16,13 @@ def add_src_to_path(project_root: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run per-domain same-domain K-shot PI diagnostics.")
+    parser = argparse.ArgumentParser(description="Run K-shot PI diagnostics across source/target protocols.")
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--n-trials", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--run-name", default="model_kshot_protocol_comparison")
+    parser.add_argument("--pooled-proto-checkpoint", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -34,12 +37,11 @@ def main() -> None:
     from wifi_doppler.models.sharp import (
         MultiAntennaEncoder,
         MultiAntennaModel,
-        SharpSingleAntennaEncoder,
         SingleAntennaModel,
+        build_sharp_single_antenna_encoder,
     )
 
-    run_group = "few_shot_per_domain_evaluation"
-    run_name = "per_domain_featuremap_vs_projection"
+    run_group = "few_shot_model_comparison"
     doppler_dir = project_root / "data" / "doppler_traces_pi"
 
     softmax_checkpoint_path = (
@@ -49,23 +51,33 @@ def main() -> None:
         / "pi_all_persons_123_train_4_test_sharp_model_20260525_165437"
         / "model.pt"
     )
-    old_proto_checkpoint_path = (
+    old_proto_featuremap_checkpoint_path = (
         project_root
         / "experiments"
         / "few_shot_proto_evaluation"
         / "proto_multi_antenna_vs_softmax_baseline_20260527_164722"
         / "proto_model.pt"
     )
-    new_proto_checkpoint_path = (
+    flatten_mlp_proto_checkpoint_path = (
         project_root
         / "experiments"
         / "few_shot_proto_evaluation"
         / "proto_multi_antenna_vs_softmax_baseline_20260528_184419"
-        / "proto_model_best.pt"
+        / "proto_model.pt"
     )
+    pooled_proto_checkpoint_path = args.pooled_proto_checkpoint or (
+        project_root
+        / "experiments"
+        / "few_shot_proto_evaluation"
+        / "proto_pooled_head_vs_softmax_baseline_20260528_220334"
+        / "proto_model.pt"
+    )
+    pooled_proto_checkpoint_path = pooled_proto_checkpoint_path.resolve()
 
     persons = ["p03", "p05", "p06", "p07", "p08", "p09", "p10", "p11", "p12", "p13"]
-    domains = ["PI-1a", "PI-2a", "PI-3a", "PI-4a"]
+    source_domains = ["PI-1a", "PI-2a", "PI-3a"]
+    target_domains = ["PI-4a"]
+    all_domains = source_domains + target_domains
     k_values = [1, 3, 5, 10, 25, 50, 100]
     enrollment_split = (0.0, 0.6)
     query_split = (0.6, 0.8)
@@ -101,47 +113,78 @@ def main() -> None:
         model.eval()
         return model
 
-    def build_legacy_featuremap_model(path: Path) -> torch.nn.Module:
+    def build_legacy_featuremap_model(path: Path) -> tuple[torch.nn.Module, dict]:
         checkpoint = load_checkpoint(path)
         model = MultiAntennaModel(SingleAntennaModel(num_classes=len(persons))).to(device)
-        return load_state_dict_with_lazy_init(model, checkpoint, use_forward=True)
+        return load_state_dict_with_lazy_init(model, checkpoint, use_forward=True), checkpoint
 
-    def build_new_proto_encoder(path: Path) -> torch.nn.Module:
+    def build_metric_encoder(path: Path, *, default_encoder_type: str) -> tuple[torch.nn.Module, dict]:
         checkpoint = load_checkpoint(path)
         config = checkpoint.get("config", {})
+        encoder_type = str(config.get("proto_encoder_type", default_encoder_type))
+        pool_size = tuple(config.get("proto_pool_size", (10, 10)))
+        hidden_dim = config.get("proto_hidden_dim")
+        hidden_dim = int(hidden_dim) if hidden_dim is not None else None
+
         model = MultiAntennaEncoder(
-            SharpSingleAntennaEncoder(
+            build_sharp_single_antenna_encoder(
+                encoder_type=encoder_type,
                 embedding_dim=int(config.get("proto_embedding_dim", 128)),
-                hidden_dim=int(config.get("proto_hidden_dim", 256)),
+                hidden_dim=hidden_dim,
+                pool_size=(int(pool_size[0]), int(pool_size[1])),
+                dropout=float(config.get("proto_head_dropout", 0.0)),
                 normalize=True,
             )
         ).to(device)
-        return load_state_dict_with_lazy_init(model, checkpoint)
+        return load_state_dict_with_lazy_init(model, checkpoint), checkpoint
+
+    softmax_model, softmax_checkpoint = build_legacy_featuremap_model(softmax_checkpoint_path)
+    old_proto_model, old_proto_checkpoint = build_legacy_featuremap_model(old_proto_featuremap_checkpoint_path)
+    flatten_mlp_model, flatten_mlp_checkpoint = build_metric_encoder(
+        flatten_mlp_proto_checkpoint_path,
+        default_encoder_type="flatten_mlp",
+    )
+    pooled_model, pooled_checkpoint = build_metric_encoder(
+        pooled_proto_checkpoint_path,
+        default_encoder_type="pooled",
+    )
 
     models = {
         "softmax_featuremap": {
             "label": "softmax feature maps",
-            "model": build_legacy_featuremap_model(softmax_checkpoint_path),
+            "model": softmax_model,
+            "checkpoint": softmax_checkpoint_path,
         },
         "old_proto_featuremap": {
             "label": "old proto feature maps",
-            "model": build_legacy_featuremap_model(old_proto_checkpoint_path),
+            "model": old_proto_model,
+            "checkpoint": old_proto_featuremap_checkpoint_path,
         },
-        "new_proto_encoder": {
-            "label": "new proto 128-D encoder",
-            "model": build_new_proto_encoder(new_proto_checkpoint_path),
+        "flatten_mlp_proto": {
+            "label": "flatten-MLP proto 128-D",
+            "model": flatten_mlp_model,
+            "checkpoint": flatten_mlp_proto_checkpoint_path,
+        },
+        "pooled_proto": {
+            "label": "pooled-head proto 128-D",
+            "model": pooled_model,
+            "checkpoint": pooled_proto_checkpoint_path,
         },
     }
 
-    run_dir = create_run_dir(project_root, run_group, run_name)
+    run_dir = create_run_dir(project_root, run_group, args.run_name)
     print("run directory:", run_dir)
 
-    results: dict[str, dict[str, dict[int, dict[str, float | list[float]]]]] = {}
-    for domain in domains:
-        print(f"\n=== {domain} same-domain K-shot ===")
+    def evaluate_protocol(
+        protocol_name: str,
+        *,
+        enrollment_domains: Sequence[str],
+        query_domains: Sequence[str],
+    ) -> dict[str, dict[int, dict[str, float | list[float]]]]:
+        print(f"\n=== {protocol_name} ===")
         enrollment_dataset = DopplerWindowDataset(
             doppler_dir,
-            scenarios=[domain],
+            scenarios=list(enrollment_domains),
             split=enrollment_split,
             window_size=window_size,
             window_stride=window_stride,
@@ -149,18 +192,20 @@ def main() -> None:
         )
         query_dataset = DopplerWindowDataset(
             doppler_dir,
-            scenarios=[domain],
+            scenarios=list(query_domains),
             split=query_split,
             window_size=window_size,
             window_stride=window_stride,
             labels=persons,
         )
+        print("enrollment domains:", list(enrollment_domains))
+        print("query domains:", list(query_domains))
         print("enrollment windows:", len(enrollment_dataset), "query windows:", len(query_dataset))
 
-        results[domain] = {}
+        protocol_results = {}
         for model_key, model_info in models.items():
             print(f"evaluating {model_info['label']}")
-            domain_results = evaluate_kshot(
+            model_results = evaluate_kshot(
                 model_info["model"],
                 enrollment_dataset,
                 query_dataset,
@@ -172,26 +217,42 @@ def main() -> None:
                 embedding_fusion=embedding_fusion,
                 metric=metric,
             )
-            results[domain][model_key] = domain_results
+            protocol_results[model_key] = model_results
             for k in k_values:
-                mean = domain_results[k]["mean"]
-                std = domain_results[k]["std"]
+                mean = model_results[k]["mean"]
+                std = model_results[k]["std"]
                 print(f"  K={k:>3}: {mean:.4f} +/- {std:.4f}")
 
         enrollment_dataset.clear_cache()
         query_dataset.clear_cache()
+        return protocol_results
+
+    results = {
+        "mixed_source": evaluate_protocol(
+            "mixed-source K-shot",
+            enrollment_domains=source_domains,
+            query_domains=source_domains,
+        ),
+        "per_domain": {},
+    }
+    for domain in all_domains:
+        results["per_domain"][domain] = evaluate_protocol(
+            f"{domain} same-domain K-shot",
+            enrollment_domains=[domain],
+            query_domains=[domain],
+        )
 
     styles = {
         "softmax_featuremap": {"marker": "o"},
         "old_proto_featuremap": {"marker": "s"},
-        "new_proto_encoder": {"marker": "^"},
+        "flatten_mlp_proto": {"marker": "^"},
+        "pooled_proto": {"marker": "D"},
     }
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True, sharey=True)
-    for ax, domain in zip(axes.flat, domains, strict=True):
+    def plot_protocol(ax, protocol_results, *, title: str, ylabel: str):
         for model_key, model_info in models.items():
-            means = [results[domain][model_key][k]["mean"] for k in k_values]
-            stds = [results[domain][model_key][k]["std"] for k in k_values]
+            means = [protocol_results[model_key][k]["mean"] for k in k_values]
+            stds = [protocol_results[model_key][k]["std"] for k in k_values]
             ax.errorbar(
                 k_values,
                 means,
@@ -200,27 +261,58 @@ def main() -> None:
                 capsize=3,
                 label=model_info["label"],
             )
-        ax.set_title(domain)
+        ax.set_title(title)
         ax.set_xscale("log")
         ax.set_xticks(k_values)
         ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
-        ax.grid(True, which="both")
-        ax.set_ylim(0, 1)
-
-    for ax in axes[-1, :]:
         ax.set_xlabel("K enrollment windows per person")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("same-domain query accuracy")
+        ax.set_ylabel(ylabel)
+        ax.set_ylim(0, 1)
+        ax.grid(True, which="both")
 
+    mixed_fig, mixed_ax = plt.subplots(figsize=(8, 4.5))
+    plot_protocol(
+        mixed_ax,
+        results["mixed_source"],
+        title="Mixed-source K-shot: PI-1a/2a/3a pooled",
+        ylabel="mixed-source query accuracy",
+    )
+    mixed_ax.legend()
+    mixed_fig.tight_layout()
+    mixed_plot_path = save_figure(mixed_fig, run_dir, "mixed_source_kshot_comparison.png")
+
+    target_fig, target_ax = plt.subplots(figsize=(8, 4.5))
+    plot_protocol(
+        target_ax,
+        results["per_domain"]["PI-4a"],
+        title="Target same-domain K-shot: PI-4a",
+        ylabel="PI-4a query accuracy",
+    )
+    target_ax.legend()
+    target_fig.tight_layout()
+    target_plot_path = save_figure(target_fig, run_dir, "target_pi4_kshot_comparison.png")
+
+    per_domain_fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True, sharey=True)
+    for ax, domain in zip(axes.flat, all_domains, strict=True):
+        plot_protocol(
+            ax,
+            results["per_domain"][domain],
+            title=domain,
+            ylabel="same-domain query accuracy",
+        )
+    for ax in axes.flat:
+        ax.set_xlabel("K")
+        ax.set_ylabel("accuracy")
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3)
-    fig.suptitle("Per-domain same-domain K-shot PI diagnostic", y=0.98)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    per_domain_fig.legend(handles, labels, loc="upper center", ncol=2)
+    per_domain_fig.suptitle("Per-domain same-domain K-shot PI diagnostic", y=0.98)
+    per_domain_fig.tight_layout(rect=(0, 0, 1, 0.9))
+    per_domain_plot_path = save_figure(per_domain_fig, run_dir, "per_domain_kshot_comparison.png")
 
-    plot_path = save_figure(fig, run_dir, "per_domain_kshot_comparison.png")
     config = {
         "doppler_dir": doppler_dir,
-        "domains": domains,
+        "source_domains": source_domains,
+        "target_domains": target_domains,
         "persons": persons,
         "enrollment_split": enrollment_split,
         "query_split": query_split,
@@ -232,19 +324,28 @@ def main() -> None:
         "seed": args.seed,
         "embedding_fusion": embedding_fusion,
         "metric": metric,
-        "softmax_checkpoint": softmax_checkpoint_path,
-        "old_proto_featuremap_checkpoint": old_proto_checkpoint_path,
-        "new_proto_encoder_checkpoint": new_proto_checkpoint_path,
+        "checkpoints": {
+            key: model_info["checkpoint"]
+            for key, model_info in models.items()
+        },
     }
     results_path = save_json(
-        run_dir / "per_domain_kshot_results.json",
+        run_dir / "kshot_model_comparison_results.json",
         {
             "config": config,
             "results": results,
+            "plots": {
+                "mixed_source": mixed_plot_path,
+                "target_pi4": target_plot_path,
+                "per_domain": per_domain_plot_path,
+            },
         },
     )
 
-    print("\nplot:", plot_path)
+    print("\nplots:")
+    print("  mixed source:", mixed_plot_path)
+    print("  target PI-4a:", target_plot_path)
+    print("  per domain:", per_domain_plot_path)
     print("results:", results_path)
 
 

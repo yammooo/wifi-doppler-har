@@ -1,0 +1,63 @@
+{
+  "baseline_softmax_checkpoint": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\pi_classification\\pi_all_persons_123_train_4_test_sharp_model_20260525_165437\\model.pt",
+  "doppler_dir": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\data\\doppler_traces_pi",
+  "train_scenarios": [
+    "PI-1a",
+    "PI-2a",
+    "PI-3a"
+  ],
+  "target_scenarios": [
+    "PI-4a"
+  ],
+  "source_train_split": [
+    0.0,
+    0.6
+  ],
+  "source_val_split": [
+    0.6,
+    0.8
+  ],
+  "target_enrollment_split": [
+    0.0,
+    0.6
+  ],
+  "target_query_split": [
+    0.6,
+    0.8
+  ],
+  "window_size": 340,
+  "window_stride": 30,
+  "total_proto_steps": 3000,
+  "eval_every_steps": 100,
+  "proto_val_episodes_per_eval": 20,
+  "live_plot_every_steps": 1,
+  "proto_n_way": 10,
+  "proto_k_shot": 5,
+  "proto_q_query": 16,
+  "proto_lr": 0.0001,
+  "proto_encoder_type": "pooled",
+  "proto_embedding_dim": 128,
+  "proto_pool_size": [
+    10,
+    10
+  ],
+  "proto_hidden_dim": null,
+  "proto_head_dropout": 0.0,
+  "proto_temperature": 0.1,
+  "early_stop_metric": "proto_source_val_acc",
+  "early_stop_patience_evals": 8,
+  "early_stop_min_delta": 0.0,
+  "embedding_fusion": "mean",
+  "metric": "cosine",
+  "k_values": [
+    1,
+    3,
+    5,
+    10,
+    25,
+    50,
+    100
+  ],
+  "n_trials": 20,
+  "seed": 0
+}
