@@ -49,9 +49,11 @@ class RawCsiWindowDataset(WindowedTraceDataset):
         split_guard: int = 31,
         labels: Sequence[str] | None = None,
         flatten_channels: bool = True,
+        cache_traces: bool = False,
     ):
         self.raw_csi_traces_dir = Path(raw_csi_traces_dir)
         self.flatten_channels = flatten_channels
+        self.cache_traces = cache_traces
         super().__init__(
             scenarios=scenarios,
             split=split,
@@ -124,6 +126,7 @@ class RawCsiWindowDataset(WindowedTraceDataset):
                         repetition=trace_info["repetition"],
                         ground_truth=label,
                         trace_path=Path(entry.path),
+                        cache=self.cache_traces,
                     )
                 )
 

@@ -88,26 +88,30 @@ class RawCsiTraceRecording:
     repetition: str
     ground_truth: str
     trace_path: Path
+    cache: bool = False
 
     _csi: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def load(self) -> np.ndarray:
         """Load and cache one raw CSI trace as [antenna, subcarrier, time]."""
-        if self._csi is None:
-            if not self.trace_path.is_file():
-                raise FileNotFoundError(f"Missing raw CSI trace file: {self.trace_path}")
+        if self.cache and self._csi is not None:
+            return self._csi
 
-            with np.load(self.trace_path) as data:
-                csi = data["csi"]
+        if not self.trace_path.is_file():
+            raise FileNotFoundError(f"Missing raw CSI trace file: {self.trace_path}")
 
-            if csi.ndim != 3:
-                raise ValueError(f"Expected raw CSI trace [antenna, subcarrier, time], got {csi.shape}")
-            if not np.isfinite(csi).all():
-                raise ValueError(f"Raw CSI trace contains NaN or Inf values: {self.trace_path}")
+        with np.load(self.trace_path) as data:
+            csi = data["csi"]
 
-            self._csi = csi.astype(np.float32, copy=False)
+        if csi.ndim != 3:
+            raise ValueError(f"Expected raw CSI trace [antenna, subcarrier, time], got {csi.shape}")
+        if not np.isfinite(csi).all():
+            raise ValueError(f"Raw CSI trace contains NaN or Inf values: {self.trace_path}")
 
-        return self._csi
+        csi = csi.astype(np.float32, copy=False)
+        if self.cache:
+            self._csi = csi
+        return csi
 
     def clear_cache(self) -> None:
         """Release loaded trace array."""
