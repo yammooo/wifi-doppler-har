@@ -23,7 +23,7 @@ ENV/
 
 # Local data and generated artifacts
 pdfs/
-data/
+/data/
 dataset/
 doppler_traces/
 processed_phase/

@@ -31,7 +31,7 @@ def main() -> None:
     project_root = args.project_root.resolve()
     add_src_to_path(project_root)
 
-    from wifi_doppler.data.dataset import DopplerWindowDataset
+    from wifi_doppler.data.doppler_dataset import DopplerWindowDataset
     from wifi_doppler.evaluation.fewshot import evaluate_kshot
     from wifi_doppler.experiments.artifacts import create_run_dir, save_figure, save_json
     from wifi_doppler.models.sharp import (

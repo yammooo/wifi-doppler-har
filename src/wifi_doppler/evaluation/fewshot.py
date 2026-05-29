@@ -3,12 +3,11 @@ from collections.abc import Iterable
 import numpy as np
 import torch
 
-from wifi_doppler.data.dataset import DopplerWindowDataset
 from wifi_doppler.representation.embeddings import extract_embeddings
 from wifi_doppler.representation.prototypes import compute_prototypes, prototype_accuracy
 
 
-def window_true_labels_from_recordings(dataset: DopplerWindowDataset) -> np.ndarray:
+def window_true_labels_from_recordings(dataset) -> np.ndarray:
     """Return the integer label for each window without loading window arrays."""
     labels = []
     for window in dataset.window_indexes:
@@ -30,8 +29,8 @@ def sample_k_per_class(labels: np.ndarray, k: int, rng: np.random.Generator) -> 
 
 def evaluate_kshot(
     model: torch.nn.Module,
-    enrollment_dataset: DopplerWindowDataset,
-    query_dataset: DopplerWindowDataset,
+    enrollment_dataset,
+    query_dataset,
     k_values: Iterable[int],
     device: str | torch.device,
     n_trials: int = 20,

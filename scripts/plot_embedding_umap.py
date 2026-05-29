@@ -39,7 +39,7 @@ def main() -> None:
     from sklearn.decomposition import PCA
     from umap import UMAP
 
-    from wifi_doppler.data.dataset import DopplerWindowDataset
+    from wifi_doppler.data.doppler_dataset import DopplerWindowDataset
     from wifi_doppler.experiments.artifacts import create_run_dir, save_figure, save_json
     from wifi_doppler.models.sharp import (
         MultiAntennaEncoder,
