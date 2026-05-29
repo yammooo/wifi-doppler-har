@@ -763,3 +763,245 @@ This motivates either:
 - or a raw CSI comparison to test whether raw CSI preserves identity differently from Doppler
 
 It does not motivate further small tweaks to the current prototypical heads.
+
+## 2026-05-29 - New Direction: Raw CSI Few-Shot Baseline
+
+### Motivation
+
+The Doppler experiments show that SHARP Doppler feature maps contain person-specific information, but that information is strongly entangled with PI domain/setup. The compact prototypical heads did not recover a robust identity embedding.
+
+This motivates a direct representation comparison:
+
+```text
+Doppler spectrogram embeddings
+vs
+raw CSI amplitude embeddings
+```
+
+The research question becomes:
+
+```text
+Does raw CSI preserve identity information that SHARP Doppler discards,
+and how does this trade off against domain sensitivity?
+```
+
+This direction is inspired by SimID, which performs few-shot person recognition from CSI using prototypical learning. However, SimID uses the XRF55 dataset, where Wi-Fi samples are already stored as real-valued tensors shaped like `270 x 1000`. Our data is the SHARP 80 MHz PI dataset, where each `.mat` contains a Nexmon `csi_buff` matrix with interleaved monitor antennas and 256 OFDM bins. Therefore we cannot copy SimID preprocessing literally; we first need SHARP-compatible raw-file parsing to recover antenna/subcarrier time series.
+
+### Raw CSI Preprocessing
+
+Implemented script:
+
+- [src/scripts/preprocess_raw_csi_pi.py](../src/scripts/preprocess_raw_csi_pi.py)
+
+The preprocessing deliberately combines only the parts needed from each source:
+
+```text
+SHARP/Nexmon parsing
+↓
+raw amplitude CSI tensor
+↓
+SimID-style Butterworth filtering
+↓
+saved trace-level .npz files
+```
+
+From SHARP we copy the file-format and Nexmon cleanup steps:
+
+- load `csi_buff` from the raw `.mat`
+- apply `np.fft.fftshift` over OFDM bins
+- remove all-zero packet rows
+- split interleaved rows into the 4 monitor antenna streams
+- remove the same non-data/control subcarrier indices used by SHARP:
+
+```python
+[0, 1, 2, 3, 4, 5, 127, 128, 129, 251, 252, 253, 254, 255]
+```
+
+This converts the 256 stored OFDM bins into the 242 data subcarriers described in the SHARP and dataset papers.
+
+From SHARP we also keep per-packet mean-amplitude normalization:
+
+```text
+amplitude(packet, subcarrier) / mean_amplitude(packet)
+```
+
+This matches the original SHARP raw parsing scale normalization. It may remove some global received-power identity information, so it should be logged as a design choice and possibly ablated later.
+
+From SimID we copy the denoising idea:
+
+```text
+second-order Butterworth low-pass filter
+normalized cutoff = 0.02
+applied independently over time to each CSI row
+```
+
+In SimID, a row is one real-valued CSI stream. In our adapted representation, the equivalent row is one `(antenna, subcarrier)` amplitude trace over packet time.
+
+The output trace format is:
+
+```text
+data/raw_csi_traces_pi/
+  PI-1a/
+    PI1a_p03.npz
+    ...
+```
+
+Each saved file contains:
+
+```text
+csi      : float32 [4, 242, T]
+label    : "p03", ...
+scenario : "PI-1a", ...
+source_file
+```
+
+The script writes `metadata.json` documenting the SHARP-copied parsing steps, SimID filtering parameters, subcarrier deletion, and output layout.
+
+Important: this is not SHARP Doppler preprocessing. We intentionally do not apply:
+
+- SHARP phase sanitization
+- H reconstruction
+- Doppler FFT/profile extraction
+
+The result remains raw-amplitude CSI.
+
+### Storage Decision
+
+We save preprocessed traces rather than filtering on the fly. A single raw trace can be large:
+
+```text
+4 antennas x 242 subcarriers x ~45,000 packets
+≈ 43.5M float values
+≈ 174 MB as float32
+```
+
+Across the PI subset, uncompressed raw CSI traces can take several GB. The script supports `--compressed` to trade lower disk usage for slower loading. We still save traces, not windows, because trace-level storage lets us later change:
+
+- window length
+- window stride
+- train/query split
+- few-shot enrollment sampling
+- normalization ablations
+
+without rerunning raw preprocessing.
+
+### Raw CSI Encoder Architecture
+
+Implemented model:
+
+- [src/wifi_doppler/models/raw_csi.py](../src/wifi_doppler/models/raw_csi.py)
+
+The model is SimID-inspired but smaller and adapted to our SHARP PI raw CSI format.
+
+Expected input:
+
+```text
+[batch, channels, time]
+```
+
+For the first dataset class, we will flatten the saved trace layout:
+
+```text
+[4, 242, T] -> [968, T]
+```
+
+So the model sees:
+
+```text
+channels = 4 monitor antennas x 242 data subcarriers = 968
+```
+
+Architecture:
+
+```text
+Input: [B, 968, T]
+
+Channel mixer:
+  Conv1d(968, 128, kernel_size=1, bias=False)
+  BatchNorm1d(128)
+  ReLU
+
+Temporal stem:
+  Conv1d(128, 128, kernel_size=7, stride=2, padding=3, bias=False)
+  BatchNorm1d(128)
+  ReLU
+
+Temporal residual body:
+  ResidualBlock1d(128 -> 128, stride=1)
+  ResidualBlock1d(128 -> 128, stride=1)
+  ResidualBlock1d(128 -> 256, stride=2)
+
+Projection:
+  AdaptiveAvgPool1d(1)
+  Linear(256 -> 128)
+  L2 normalize
+```
+
+Parameter count for the expected SHARP PI input:
+
+```text
+in_channels = 968
+trainable parameters = 798,848
+```
+
+This is much smaller than SimID's SE-ResNet10 encoder, which is about `3.16M` parameters, but much larger and more appropriate for raw CSI than the tiny SHARP Doppler pooled encoder.
+
+### Architecture Inspiration and Changes
+
+What we copy from SimID conceptually:
+
+- use raw CSI time series rather than Doppler
+- process CSI as a temporal signal with `Conv1d`
+- produce embeddings for prototype/few-shot evaluation
+- use Butterworth-filtered CSI as input
+
+What we do differently:
+
+- SimID input is `270 x 1000`, where `270 = 9 links x 30 subcarriers`
+- our input is `968 x T`, where `968 = 4 monitor antennas x 242 subcarriers`
+- SimID uses SE-ResNet10; we start with a smaller residual Conv1d encoder
+- SimID has many more subjects/actions, so copying the full encoder may overfit our smaller PI subset
+
+The `1x1` channel mixer is the key adaptation. A direct first temporal convolution would be:
+
+```text
+Conv1d(968, 128, kernel_size=7)
+```
+
+which immediately mixes almost one thousand antenna/subcarrier streams across time. Instead we split the problem:
+
+```text
+1. Conv1d(968, 128, kernel_size=1)
+   learn useful antenna/subcarrier mixtures at each time instant
+
+2. Conv1d(128, 128, kernel_size=7)
+   learn temporal patterns from compressed CSI streams
+```
+
+This keeps all subcarriers available to the model, but reduces the parameter count and gives the encoder a cleaner inductive bias:
+
+```text
+first learn which channel combinations matter,
+then learn how those combinations evolve over time.
+```
+
+We do not share a separate encoder across subcarriers. Subcarrier index has physical meaning, and averaging independently encoded subcarriers would likely discard cross-subcarrier structure. This matches SimID's choice to stack link/subcarrier streams as channels and process them jointly.
+
+### Next Experiment
+
+The next implementation step is a raw CSI window dataset that loads saved `.npz` traces and emits:
+
+```text
+x: [968, 340]
+y: person label
+```
+
+Then evaluate the raw CSI encoder using the same few-shot protocols already used for Doppler:
+
+```text
+same-domain K-shot
+PI-1a/2a/3a source enrollment -> PI-4a target query
+PI-4a target-domain enrollment/query
+```
+
+This will let us test whether raw CSI improves identity preservation relative to SHARP Doppler, and whether any improvement is limited to same-domain conditions or survives PI domain shift.
