@@ -69,13 +69,16 @@ class RawCsiWindowDataset(WindowedTraceDataset):
         recording = self.traces[window.recording_idx]
 
         csi = recording.load()
-        x = csi[:, :, window.start:window.end]
-        if self.flatten_channels:
-            x = x.reshape(x.shape[0] * x.shape[1], x.shape[2])
-
-        x = torch.from_numpy(np.ascontiguousarray(x)).float()
+        x = self.slice_csi_window(csi, window.start, window.end)
         y = torch.tensor(self._label_to_index(recording.ground_truth), dtype=torch.long)
         return x, y
+
+    def slice_csi_window(self, csi: np.ndarray, start: int, end: int) -> torch.Tensor:
+        """Slice a loaded trace into one model window without reloading it."""
+        x = csi[:, :, start:end]
+        if self.flatten_channels:
+            x = x.reshape(x.shape[0] * x.shape[1], x.shape[2])
+        return torch.from_numpy(np.ascontiguousarray(x)).float()
 
     def _discover_labels(self, scenarios: Sequence[str]) -> tuple[str, ...]:
         labels = set()

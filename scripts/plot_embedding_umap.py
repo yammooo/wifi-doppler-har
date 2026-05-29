@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", default="raw_featuremap_vs_pooled_head_umap")
     parser.add_argument("--raw-proto-checkpoint", type=Path, default=None)
     parser.add_argument("--pooled-proto-checkpoint", type=Path, default=None)
+    parser.add_argument("--raw-csi-proto-checkpoint", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -40,7 +41,9 @@ def main() -> None:
     from umap import UMAP
 
     from wifi_doppler.data.doppler_dataset import DopplerWindowDataset
+    from wifi_doppler.data.raw_csi_dataset import RawCsiWindowDataset
     from wifi_doppler.experiments.artifacts import create_run_dir, save_figure, save_json
+    from wifi_doppler.models.raw_csi import RawCsiTemporalEncoder
     from wifi_doppler.models.sharp import (
         MultiAntennaEncoder,
         MultiAntennaModel,
@@ -50,6 +53,7 @@ def main() -> None:
     from wifi_doppler.representation.embeddings import extract_embeddings
 
     doppler_dir = project_root / "data" / "doppler_traces_pi"
+    raw_csi_dir = project_root / "data" / "raw_csi_traces_pi"
     raw_proto_checkpoint = args.raw_proto_checkpoint or (
         project_root
         / "experiments"
@@ -64,8 +68,16 @@ def main() -> None:
         / "proto_pooled_head_vs_softmax_baseline_20260528_220334"
         / "proto_model.pt"
     )
+    raw_csi_proto_checkpoint = args.raw_csi_proto_checkpoint or (
+        project_root
+        / "experiments"
+        / "few_shot_raw_csi_proto_evaluation"
+        / "raw_csi_proto_vs_doppler_featuremap_proto_20260529_173630"
+        / "proto_model_best.pt"
+    )
     raw_proto_checkpoint = raw_proto_checkpoint.resolve()
     pooled_proto_checkpoint = pooled_proto_checkpoint.resolve()
+    raw_csi_proto_checkpoint = raw_csi_proto_checkpoint.resolve()
 
     persons = ["p03", "p05", "p06", "p07", "p08", "p09", "p10", "p11", "p12", "p13"]
     domains = ["PI-1a", "PI-2a", "PI-3a", "PI-4a"]
@@ -78,7 +90,7 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     print("device:", device)
 
-    dataset = DopplerWindowDataset(
+    doppler_dataset = DopplerWindowDataset(
         doppler_dir,
         scenarios=domains,
         split=split,
@@ -86,8 +98,18 @@ def main() -> None:
         window_stride=window_stride,
         labels=persons,
     )
+    raw_csi_dataset = RawCsiWindowDataset(
+        raw_csi_dir,
+        scenarios=domains,
+        split=split,
+        window_size=window_size,
+        window_stride=window_stride,
+        labels=persons,
+        flatten_channels=True,
+        cache_traces=True,
+    )
 
-    def balanced_sample_indices() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def balanced_sample_indices(dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         groups: dict[tuple[str, str], list[int]] = defaultdict(list)
         for idx, window in enumerate(dataset.window_indexes):
             trace = dataset.traces[window.recording_idx]
@@ -114,8 +136,10 @@ def main() -> None:
             np.asarray(selected_persons, dtype=object)[order],
         )
 
-    selected_indices, selected_domains, selected_persons = balanced_sample_indices()
-    print("sampled windows:", selected_indices.size)
+    doppler_indices, doppler_domains, doppler_persons = balanced_sample_indices(doppler_dataset)
+    raw_csi_indices, raw_csi_domains, raw_csi_persons = balanced_sample_indices(raw_csi_dataset)
+    print("sampled Doppler windows:", doppler_indices.size)
+    print("sampled raw CSI windows:", raw_csi_indices.size)
 
     def load_checkpoint(path: Path) -> dict:
         if not path.exists():
@@ -164,16 +188,57 @@ def main() -> None:
         ).to(device)
         return load_state_dict_with_lazy_init(model, checkpoint)
 
+    class RawCsiProtoModel(torch.nn.Module):
+        def __init__(self, config: dict):
+            super().__init__()
+            self.encoder = RawCsiTemporalEncoder(
+                in_channels=int(config.get("raw_in_channels", 4 * 242)),
+                embedding_dim=int(config.get("proto_embedding_dim", 128)),
+                channel_mixer_dim=int(config.get("raw_channel_mixer_dim", 128)),
+                hidden_dim=int(config.get("raw_hidden_dim", 256)),
+                normalize=True,
+            )
+
+        def forward_embedding(self, x, fusion=None):
+            return self.encoder.forward_embedding(x)
+
+        def forward(self, x):
+            return self.forward_embedding(x)
+
+    def build_raw_csi_model(path: Path) -> torch.nn.Module:
+        checkpoint = load_checkpoint(path)
+        model = RawCsiProtoModel(checkpoint.get("config", {})).to(device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+        return model
+
     models = {
         "raw_featuremap_proto": {
             "label": "raw feature-map proto",
             "checkpoint": raw_proto_checkpoint,
             "model": build_raw_featuremap_model(raw_proto_checkpoint),
+            "dataset": doppler_dataset,
+            "indices": doppler_indices,
+            "domains": doppler_domains,
+            "persons": doppler_persons,
         },
         "pooled_head_proto": {
             "label": "pooled-head proto",
             "checkpoint": pooled_proto_checkpoint,
             "model": build_pooled_model(pooled_proto_checkpoint),
+            "dataset": doppler_dataset,
+            "indices": doppler_indices,
+            "domains": doppler_domains,
+            "persons": doppler_persons,
+        },
+        "raw_csi_proto": {
+            "label": "raw CSI proto",
+            "checkpoint": raw_csi_proto_checkpoint,
+            "model": build_raw_csi_model(raw_csi_proto_checkpoint),
+            "dataset": raw_csi_dataset,
+            "indices": raw_csi_indices,
+            "domains": raw_csi_domains,
+            "persons": raw_csi_persons,
         },
     }
 
@@ -204,10 +269,10 @@ def main() -> None:
         print(f"extracting embeddings: {model_info['label']}")
         embeddings, labels = extract_embeddings(
             model_info["model"],
-            dataset,
+            model_info["dataset"],
             device,
             batch_size=args.batch_size,
-            indices=selected_indices,
+            indices=model_info["indices"],
             embedding_fusion=embedding_fusion,
         )
         reduced[model_key] = reduce_embeddings(model_key, embeddings)
@@ -219,9 +284,11 @@ def main() -> None:
     person_to_color = dict(zip(persons, person_colors, strict=True))
     domain_to_color = dict(zip(domains, domain_colors, strict=True))
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 10))
+    fig, axes = plt.subplots(len(models), 2, figsize=(13, 4.5 * len(models)))
     for row_idx, (model_key, model_info) in enumerate(models.items()):
         coords = reduced[model_key]["umap"]
+        selected_persons = model_info["persons"]
+        selected_domains = model_info["domains"]
 
         ax = axes[row_idx, 0]
         for person in persons:
@@ -257,28 +324,34 @@ def main() -> None:
 
     axes[0, 0].legend(loc="best", fontsize=7, markerscale=2, ncol=2)
     axes[0, 1].legend(loc="best", fontsize=8, markerscale=2)
-    fig.suptitle("UMAP of PI Doppler embeddings", y=0.995)
+    fig.suptitle("UMAP of PI embeddings", y=0.995)
     fig.tight_layout()
 
     plot_path = save_figure(fig, run_dir, "embedding_umap_person_domain.png", dpi=180)
     npz_path = run_dir / "embedding_umap_coordinates.npz"
     np.savez_compressed(
         npz_path,
-        selected_indices=selected_indices,
-        domains=selected_domains.astype(str),
-        persons=selected_persons.astype(str),
+        doppler_indices=doppler_indices,
+        doppler_domains=doppler_domains.astype(str),
+        doppler_persons=doppler_persons.astype(str),
+        raw_csi_indices=raw_csi_indices,
+        raw_csi_domains=raw_csi_domains.astype(str),
+        raw_csi_persons=raw_csi_persons.astype(str),
         raw_featuremap_proto_umap=reduced["raw_featuremap_proto"]["umap"],
         pooled_head_proto_umap=reduced["pooled_head_proto"]["umap"],
+        raw_csi_proto_umap=reduced["raw_csi_proto"]["umap"],
     )
     config = {
         "doppler_dir": doppler_dir,
+        "raw_csi_dir": raw_csi_dir,
         "domains": domains,
         "persons": persons,
         "split": split,
         "window_size": window_size,
         "window_stride": window_stride,
         "sample_per_person_domain": args.sample_per_person_domain,
-        "sampled_windows": int(selected_indices.size),
+        "sampled_doppler_windows": int(doppler_indices.size),
+        "sampled_raw_csi_windows": int(raw_csi_indices.size),
         "batch_size": args.batch_size,
         "seed": args.seed,
         "pca_components": args.pca_components,
@@ -294,7 +367,8 @@ def main() -> None:
     }
     config_path = save_json(run_dir / "embedding_umap_config.json", config)
 
-    dataset.clear_cache()
+    doppler_dataset.clear_cache()
+    raw_csi_dataset.clear_cache()
     print("run directory:", run_dir)
     print("plot:", plot_path)
     print("coordinates:", npz_path)

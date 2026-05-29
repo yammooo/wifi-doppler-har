@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--run-name", default="model_kshot_protocol_comparison")
     parser.add_argument("--pooled-proto-checkpoint", type=Path, default=None)
+    parser.add_argument("--raw-csi-proto-checkpoint", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -32,8 +33,10 @@ def main() -> None:
     add_src_to_path(project_root)
 
     from wifi_doppler.data.doppler_dataset import DopplerWindowDataset
+    from wifi_doppler.data.raw_csi_dataset import RawCsiWindowDataset
     from wifi_doppler.evaluation.fewshot import evaluate_kshot
     from wifi_doppler.experiments.artifacts import create_run_dir, save_figure, save_json
+    from wifi_doppler.models.raw_csi import RawCsiTemporalEncoder
     from wifi_doppler.models.sharp import (
         MultiAntennaEncoder,
         MultiAntennaModel,
@@ -43,6 +46,7 @@ def main() -> None:
 
     run_group = "few_shot_model_comparison"
     doppler_dir = project_root / "data" / "doppler_traces_pi"
+    raw_csi_dir = project_root / "data" / "raw_csi_traces_pi"
 
     softmax_checkpoint_path = (
         project_root
@@ -73,6 +77,14 @@ def main() -> None:
         / "proto_model.pt"
     )
     pooled_proto_checkpoint_path = pooled_proto_checkpoint_path.resolve()
+    raw_csi_proto_checkpoint_path = args.raw_csi_proto_checkpoint or (
+        project_root
+        / "experiments"
+        / "few_shot_raw_csi_proto_evaluation"
+        / "raw_csi_proto_vs_doppler_featuremap_proto_20260529_173630"
+        / "proto_model_best.pt"
+    )
+    raw_csi_proto_checkpoint_path = raw_csi_proto_checkpoint_path.resolve()
 
     persons = ["p03", "p05", "p06", "p07", "p08", "p09", "p10", "p11", "p12", "p13"]
     source_domains = ["PI-1a", "PI-2a", "PI-3a"]
@@ -138,6 +150,30 @@ def main() -> None:
         ).to(device)
         return load_state_dict_with_lazy_init(model, checkpoint), checkpoint
 
+    class RawCsiProtoModel(torch.nn.Module):
+        def __init__(self, config: dict):
+            super().__init__()
+            self.encoder = RawCsiTemporalEncoder(
+                in_channels=int(config.get("raw_in_channels", 4 * 242)),
+                embedding_dim=int(config.get("proto_embedding_dim", 128)),
+                channel_mixer_dim=int(config.get("raw_channel_mixer_dim", 128)),
+                hidden_dim=int(config.get("raw_hidden_dim", 256)),
+                normalize=True,
+            )
+
+        def forward_embedding(self, x, fusion=None):
+            return self.encoder.forward_embedding(x)
+
+        def forward(self, x):
+            return self.forward_embedding(x)
+
+    def build_raw_csi_proto_model(path: Path) -> tuple[torch.nn.Module, dict]:
+        checkpoint = load_checkpoint(path)
+        model = RawCsiProtoModel(checkpoint.get("config", {})).to(device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+        return model, checkpoint
+
     softmax_model, softmax_checkpoint = build_legacy_featuremap_model(softmax_checkpoint_path)
     old_proto_model, old_proto_checkpoint = build_legacy_featuremap_model(old_proto_featuremap_checkpoint_path)
     flatten_mlp_model, flatten_mlp_checkpoint = build_metric_encoder(
@@ -148,6 +184,7 @@ def main() -> None:
         pooled_proto_checkpoint_path,
         default_encoder_type="pooled",
     )
+    raw_csi_model, raw_csi_checkpoint = build_raw_csi_proto_model(raw_csi_proto_checkpoint_path)
 
     models = {
         "softmax_featuremap": {
@@ -169,8 +206,17 @@ def main() -> None:
             "label": "pooled-head proto 128-D",
             "model": pooled_model,
             "checkpoint": pooled_proto_checkpoint_path,
+            "representation": "doppler",
+        },
+        "raw_csi_proto": {
+            "label": "raw CSI proto 128-D",
+            "model": raw_csi_model,
+            "checkpoint": raw_csi_proto_checkpoint_path,
+            "representation": "raw_csi",
         },
     }
+    for model_info in models.values():
+        model_info.setdefault("representation", "doppler")
 
     run_dir = create_run_dir(project_root, run_group, args.run_name)
     print("run directory:", run_dir)
@@ -182,29 +228,51 @@ def main() -> None:
         query_domains: Sequence[str],
     ) -> dict[str, dict[int, dict[str, float | list[float]]]]:
         print(f"\n=== {protocol_name} ===")
-        enrollment_dataset = DopplerWindowDataset(
-            doppler_dir,
-            scenarios=list(enrollment_domains),
-            split=enrollment_split,
-            window_size=window_size,
-            window_stride=window_stride,
-            labels=persons,
-        )
-        query_dataset = DopplerWindowDataset(
-            doppler_dir,
-            scenarios=list(query_domains),
-            split=query_split,
-            window_size=window_size,
-            window_stride=window_stride,
-            labels=persons,
-        )
         print("enrollment domains:", list(enrollment_domains))
         print("query domains:", list(query_domains))
-        print("enrollment windows:", len(enrollment_dataset), "query windows:", len(query_dataset))
 
         protocol_results = {}
         for model_key, model_info in models.items():
+            if model_info["representation"] == "raw_csi":
+                enrollment_dataset = RawCsiWindowDataset(
+                    raw_csi_dir,
+                    scenarios=list(enrollment_domains),
+                    split=enrollment_split,
+                    window_size=window_size,
+                    window_stride=window_stride,
+                    labels=persons,
+                    flatten_channels=True,
+                    cache_traces=True,
+                )
+                query_dataset = RawCsiWindowDataset(
+                    raw_csi_dir,
+                    scenarios=list(query_domains),
+                    split=query_split,
+                    window_size=window_size,
+                    window_stride=window_stride,
+                    labels=persons,
+                    flatten_channels=True,
+                    cache_traces=True,
+                )
+            else:
+                enrollment_dataset = DopplerWindowDataset(
+                    doppler_dir,
+                    scenarios=list(enrollment_domains),
+                    split=enrollment_split,
+                    window_size=window_size,
+                    window_stride=window_stride,
+                    labels=persons,
+                )
+                query_dataset = DopplerWindowDataset(
+                    doppler_dir,
+                    scenarios=list(query_domains),
+                    split=query_split,
+                    window_size=window_size,
+                    window_stride=window_stride,
+                    labels=persons,
+                )
             print(f"evaluating {model_info['label']}")
+            print("  enrollment windows:", len(enrollment_dataset), "query windows:", len(query_dataset))
             model_results = evaluate_kshot(
                 model_info["model"],
                 enrollment_dataset,
@@ -223,8 +291,8 @@ def main() -> None:
                 std = model_results[k]["std"]
                 print(f"  K={k:>3}: {mean:.4f} +/- {std:.4f}")
 
-        enrollment_dataset.clear_cache()
-        query_dataset.clear_cache()
+            enrollment_dataset.clear_cache()
+            query_dataset.clear_cache()
         return protocol_results
 
     results = {
@@ -247,6 +315,7 @@ def main() -> None:
         "old_proto_featuremap": {"marker": "s"},
         "flatten_mlp_proto": {"marker": "^"},
         "pooled_proto": {"marker": "D"},
+        "raw_csi_proto": {"marker": "P"},
     }
 
     def plot_protocol(ax, protocol_results, *, title: str, ylabel: str):
@@ -311,6 +380,7 @@ def main() -> None:
 
     config = {
         "doppler_dir": doppler_dir,
+        "raw_csi_dir": raw_csi_dir,
         "source_domains": source_domains,
         "target_domains": target_domains,
         "persons": persons,

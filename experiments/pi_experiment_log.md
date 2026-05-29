@@ -1005,3 +1005,175 @@ PI-4a target-domain enrollment/query
 ```
 
 This will let us test whether raw CSI improves identity preservation relative to SHARP Doppler, and whether any improvement is limited to same-domain conditions or survives PI domain shift.
+
+## 2026-05-29 - Raw CSI Prototype Training And Diagnostics
+
+### Training Run
+
+Raw CSI prototypical training was run with the SimID-inspired temporal encoder:
+
+- model: `RawCsiTemporalEncoder`
+- input: `[968, 340]`
+- embedding: `128-D`
+- train domains: `PI-1a`, `PI-2a`, `PI-3a`
+- target domain: `PI-4a`
+- objective: 10-way prototypical loss
+- support/query per training episode: `K=5`, `Q=8`
+- temperature: `0.1` in the saved run
+
+Artifacts:
+
+- Run directory: [experiments/few_shot_raw_csi_proto_evaluation/raw_csi_proto_vs_doppler_featuremap_proto_20260529_173630](../experiments/few_shot_raw_csi_proto_evaluation/raw_csi_proto_vs_doppler_featuremap_proto_20260529_173630)
+- Best checkpoint: [proto_model_best.pt](../experiments/few_shot_raw_csi_proto_evaluation/raw_csi_proto_vs_doppler_featuremap_proto_20260529_173630/proto_model_best.pt)
+
+![Final comparison plot](../experiments/few_shot_raw_csi_proto_evaluation/raw_csi_proto_vs_doppler_featuremap_proto_20260529_173630/raw_csi_proto_vs_doppler_baselines_accuracy.png)
+
+During training, the raw CSI model fit the source-domain episodes very quickly. Training accuracy reached near-perfect values, and source-domain validation episodes were also high. Target-domain validation on `PI-4a` was much lower and unstable, typically around `0.35-0.50`.
+
+This already suggests the main pattern:
+
+```text
+raw CSI contains strong person-specific information,
+but the learned identity geometry is highly domain-conditioned.
+```
+
+The raw CSI model is not failing to learn identity. It is failing to align identity consistently across the unseen PI domain.
+
+### Same-Domain K-Shot Diagnostics
+
+Artifacts:
+
+- Run directory: [experiments/few_shot_model_comparison/model_kshot_protocol_comparison_20260529_181007](../experiments/few_shot_model_comparison/model_kshot_protocol_comparison_20260529_181007)
+- Results JSON: [kshot_model_comparison_results.json](../experiments/few_shot_model_comparison/model_kshot_protocol_comparison_20260529_181007/kshot_model_comparison_results.json)
+![Mixed-source plot](../experiments/few_shot_model_comparison/model_kshot_protocol_comparison_20260529_181007/mixed_source_kshot_comparison.png)
+![Per-domain plot](../experiments/few_shot_model_comparison/model_kshot_protocol_comparison_20260529_181007/per_domain_kshot_comparison.png)
+![Target PI-4a plot](../experiments/few_shot_model_comparison/model_kshot_protocol_comparison_20260529_181007/target_pi4_kshot_comparison.png)
+
+The same-domain K-shot results show a strong split between source and target domains.
+
+Raw CSI prototype accuracy:
+
+```text
+domain   K=1     K=10    K=100
+PI-1a    0.928   0.931   0.932
+PI-2a    0.832   0.829   0.830
+PI-3a    0.941   0.943   0.942
+PI-4a    0.278   0.375   0.447
+```
+
+Doppler feature-map prototype accuracy:
+
+```text
+domain   K=1     K=10    K=100
+PI-1a    0.548   0.808   0.867
+PI-2a    0.303   0.594   0.775
+PI-3a    0.430   0.620   0.629
+PI-4a    0.274   0.484   0.631
+```
+
+Interpretation:
+
+- On source domains, raw CSI is dramatically better than Doppler. Even `K=1` is enough to classify most query windows correctly.
+- On the unseen target domain `PI-4a`, raw CSI improves with larger `K`, but it remains below the Doppler feature-map prototype baseline for larger enrollment sizes.
+- Doppler feature maps are weaker in seen/source domains, but they benefit more from additional target-domain enrollment examples and outperform raw CSI on `PI-4a` at high `K`.
+
+This supports the core tradeoff:
+
+```text
+raw CSI:
+  stronger identity/channel information in seen domains
+  stronger domain sensitivity
+
+Doppler feature maps:
+  weaker identity signal in source domains
+  better target-domain behavior when enough enrollment windows are available
+```
+
+The mixed-source result should be interpreted carefully. In this diagnostic, `mixed_source` means:
+
+```text
+enrollment: PI-1a, PI-2a, PI-3a
+query:      PI-1a, PI-2a, PI-3a
+```
+
+It is not an unseen-domain evaluation. Raw CSI reaches about `0.89` there, confirming excellent performance on the pooled source distribution.
+
+### UMAP Diagnostic
+
+Artifacts:
+
+- Run directory: [experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_184244](../experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_184244)
+-![Embedding UMAP plot](../experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_184244/embedding_umap_person_domain.png)
+- Coordinates: [embedding_umap_coordinates.npz](../experiments/embedding_umap/raw_featuremap_vs_pooled_head_umap_20260529_184244/embedding_umap_coordinates.npz)
+
+The UMAP visualization helps explain the K-shot results.
+
+For raw CSI:
+
+- source-domain persons are well separated
+- domains are also strongly separated
+- `PI-4a` appears as its own target-domain region
+- inside the `PI-4a` region, persons form local blobs, but those blobs are not globally aligned with the source-domain person clusters
+
+This explains why raw CSI works extremely well in source-domain K-shot and only moderately in target-domain K-shot. The embedding contains person information, but the person identity geometry is organized separately inside each domain.
+
+For Doppler feature maps:
+
+- domain structure is visible
+- person information appears as weaker local structure
+- same-domain K-shot can work because local person neighborhoods exist
+- target-domain K-shot improves with higher `K` because additional enrollment samples better estimate the local target-domain person neighborhoods
+
+### Main Finding From This Stage
+
+The raw CSI baseline changes the project interpretation. We can now state a stronger and more nuanced conclusion:
+
+```text
+Raw CSI preserves much stronger person-specific information than SHARP Doppler
+in domains seen during training, often requiring only one enrollment window.
+
+However, this information is highly domain-conditioned. Under the unseen PI-4a
+Wi-Fi setup, the raw CSI embedding does not align identities as well as expected,
+and the Doppler feature-map prototype baseline performs better at larger K.
+```
+
+This is exactly the kind of tradeoff the project was meant to test:
+
+```text
+raw CSI = more identity/channel information, more domain overfitting
+Doppler = less direct identity information, but potentially more robust motion structure
+```
+
+### Caveat: Architecture Capacity
+
+The comparison is not perfectly architecture-controlled. The raw CSI encoder has about `0.8M` parameters, while the original SHARP Doppler backbone is much smaller. Therefore we should not overclaim that the representation alone explains the difference.
+
+The fair statement is:
+
+```text
+With the current models, raw CSI plus a larger temporal encoder learns source-domain
+identity much more easily than the SHARP Doppler models, but still struggles under
+unseen-domain shift.
+```
+
+A stronger Doppler encoder would be a useful ablation if time allows, but the raw CSI results already show that increasing capacity alone does not guarantee target-domain robustness.
+
+### Next Direction
+
+The most targeted next experiment is domain-cross episodic training:
+
+```text
+support: one source PI domain
+query:   a different source PI domain
+same identities
+```
+
+Examples:
+
+```text
+support PI-1a -> query PI-2a
+support PI-2a -> query PI-3a
+support PI-3a -> query PI-1a
+```
+
+This directly trains the embedding to make same-person prototypes useful across domain changes. It is a better next step than simply increasing model size, because the current raw CSI model already fits source identities very well.
