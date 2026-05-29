@@ -30,6 +30,35 @@ def group_indices_by_label(labels: np.ndarray) -> dict[int, np.ndarray]:
     }
 
 
+def window_domains_from_recordings(dataset) -> np.ndarray:
+    """Return the scenario/domain for each window without loading arrays."""
+    domains = []
+    for window in dataset.window_indexes:
+        trace = dataset.traces[window.recording_idx]
+        domains.append(trace.scenario)
+    return np.asarray(domains)
+
+
+def group_indices_by_label_and_domain(
+    labels: np.ndarray,
+    domains: np.ndarray,
+) -> dict[tuple[int, str], np.ndarray]:
+    """Group dataset window indices by class label and scenario/domain."""
+    if labels.shape[0] != domains.shape[0]:
+        raise ValueError(
+            f"labels and domains must have the same length, got "
+            f"{labels.shape[0]} and {domains.shape[0]}."
+        )
+
+    groups = {}
+    for label in sorted(np.unique(labels)):
+        for domain in sorted(np.unique(domains)):
+            indices = np.flatnonzero((labels == label) & (domains == domain))
+            if indices.size:
+                groups[(int(label), str(domain))] = indices
+    return groups
+
+
 def sample_episode_indices(
     labels: np.ndarray,
     *,
@@ -59,6 +88,67 @@ def sample_episode_indices(
         query_indices.extend(sampled[k_shot:].tolist())
 
     return np.asarray(support_indices, dtype=np.int64), np.asarray(query_indices, dtype=np.int64)
+
+
+def sample_domain_cross_episode_indices(
+    labels: np.ndarray,
+    domains: np.ndarray,
+    *,
+    support_domain: str,
+    query_domain: str,
+    n_way: int,
+    k_shot: int,
+    q_query: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample an episode with support/query constrained to specific domains.
+
+    This is useful for domain-cross prototypical training: a prototype is built
+    from one source domain, while queries for the same identities come from a
+    different source domain.
+    """
+    groups = group_indices_by_label_and_domain(labels, domains)
+    same_domain = support_domain == query_domain
+
+    eligible_labels = []
+    for label in sorted(np.unique(labels)):
+        support_indices = groups.get((int(label), support_domain), np.asarray([], dtype=np.int64))
+        query_indices = groups.get((int(label), query_domain), np.asarray([], dtype=np.int64))
+        if same_domain:
+            if support_indices.size >= k_shot + q_query:
+                eligible_labels.append(int(label))
+        elif support_indices.size >= k_shot and query_indices.size >= q_query:
+            eligible_labels.append(int(label))
+
+    if len(eligible_labels) < n_way:
+        raise ValueError(
+            f"Only {len(eligible_labels)} classes have enough samples for "
+            f"{support_domain!r}->{query_domain!r}; n_way={n_way}, "
+            f"k_shot={k_shot}, q_query={q_query}."
+        )
+
+    episode_labels = rng.choice(eligible_labels, size=n_way, replace=False)
+    support_episode_indices = []
+    query_episode_indices = []
+    for label in episode_labels:
+        support_pool = groups[(int(label), support_domain)]
+        if same_domain:
+            sampled = rng.choice(support_pool, size=k_shot + q_query, replace=False)
+            support_episode_indices.extend(sampled[:k_shot].tolist())
+            query_episode_indices.extend(sampled[k_shot:].tolist())
+        else:
+            query_pool = groups[(int(label), query_domain)]
+            support_episode_indices.extend(
+                rng.choice(support_pool, size=k_shot, replace=False).tolist()
+            )
+            query_episode_indices.extend(
+                rng.choice(query_pool, size=q_query, replace=False).tolist()
+            )
+
+    return (
+        np.asarray(support_episode_indices, dtype=np.int64),
+        np.asarray(query_episode_indices, dtype=np.int64),
+    )
 
 
 def load_episode(dataset, support_indices: np.ndarray, query_indices: np.ndarray) -> Episode:
