@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "record_type": "comparison.figure",
+  "record_id": "20260530_163353_comparison_figure_20260530_raw_csi_training_regimes_vs_doppler_umap_d0c7179c",
+  "created_at": "2026-05-30T14:33:54+00:00",
+  "source": {
+    "mode": "computed",
+    "legacy_paths": []
+  },
+  "model": {
+    "model_ids": [
+      "raw_csi_mixed_proto",
+      "20260530_raw_csi_proto_domain_separated",
+      "doppler_featuremap_proto"
+    ]
+  },
+  "dataset": {
+    "projection_record_ids": [
+      "20260530_163325_projection_umap_raw_csi_mixed_proto_umap_all_domains_balanced_754e4ef0",
+      "20260530_162354_projection_umap_20260530_raw_csi_proto_domain_separated_umap_all_domains_balanced_a8e85e7c",
+      "20260530_162543_projection_umap_doppler_featuremap_proto_umap_all_domains_balanced_1aa07205"
+    ]
+  },
+  "protocol": {
+    "name": "20260530_raw_csi_training_regimes_vs_doppler_umap"
+  },
+  "metrics": {},
+  "artifacts": {
+    "plot": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\comparisons\\20260530_raw_csi_training_regimes_vs_doppler_umap\\embedding_umap_person_domain.png",
+    "input_records": [
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\projections\\raw_csi_mixed_proto\\umap_all_domains_balanced\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\projections\\20260530_raw_csi_proto_domain_separated\\umap_all_domains_balanced\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\projections\\doppler_featuremap_proto\\umap_all_domains_balanced\\record.json"
+    ]
+  }
+}

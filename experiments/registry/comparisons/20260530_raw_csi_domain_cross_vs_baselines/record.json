@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "record_type": "comparison.figure",
+  "record_id": "20260530_161021_comparison_figure_20260530_raw_csi_domain_cross_vs_baselines_b02f62a7",
+  "created_at": "2026-05-30T14:10:23+00:00",
+  "source": {
+    "mode": "computed",
+    "legacy_paths": []
+  },
+  "model": {
+    "model_ids": [
+      "20260530_raw_csi_proto_domain_separated",
+      "doppler_featuremap_proto",
+      "doppler_pooled_head_proto",
+      "doppler_softmax_baseline",
+      "raw_csi_mixed_proto"
+    ]
+  },
+  "dataset": {
+    "protocols": [
+      "mixed_source",
+      "same_domain_PI-1a",
+      "same_domain_PI-2a",
+      "same_domain_PI-3a",
+      "same_domain_PI-4a"
+    ]
+  },
+  "protocol": {
+    "name": "20260530_raw_csi_domain_cross_vs_baselines"
+  },
+  "metrics": {
+    "input_record_ids": [
+      "20260530_153608_evaluation_kshot_20260530_raw_csi_proto_domain_separated_mixed_source_ea93cb2c",
+      "20260530_153723_evaluation_kshot_20260530_raw_csi_proto_domain_separated_same_domain_pi_1a_86a8d540",
+      "20260530_153832_evaluation_kshot_20260530_raw_csi_proto_domain_separated_same_domain_pi_2a_4fd30961",
+      "20260530_153940_evaluation_kshot_20260530_raw_csi_proto_domain_separated_same_domain_pi_3a_c14b71cc",
+      "20260530_154051_evaluation_kshot_20260530_raw_csi_proto_domain_separated_same_domain_pi_4a_a1534902",
+      "20260530_153247_evaluation_kshot_doppler_featuremap_proto_mixed_source_fe4b408e",
+      "20260530_153247_evaluation_kshot_doppler_featuremap_proto_same_domain_pi_1a_8dd5b115",
+      "20260530_153247_evaluation_kshot_doppler_featuremap_proto_same_domain_pi_2a_ced4f148",
+      "20260530_153247_evaluation_kshot_doppler_featuremap_proto_same_domain_pi_3a_03cbcdae",
+      "20260530_153247_evaluation_kshot_doppler_featuremap_proto_same_domain_pi_4a_571a48d9",
+      "20260530_153247_evaluation_kshot_doppler_pooled_head_proto_mixed_source_d08502f1",
+      "20260530_153247_evaluation_kshot_doppler_pooled_head_proto_same_domain_pi_1a_36c45bc3",
+      "20260530_153247_evaluation_kshot_doppler_pooled_head_proto_same_domain_pi_2a_5c9f501a",
+      "20260530_153247_evaluation_kshot_doppler_pooled_head_proto_same_domain_pi_3a_faf5605f",
+      "20260530_153247_evaluation_kshot_doppler_pooled_head_proto_same_domain_pi_4a_cfa178b4",
+      "20260530_153247_evaluation_kshot_doppler_softmax_baseline_mixed_source_8fda6b18",
+      "20260530_153247_evaluation_kshot_doppler_softmax_baseline_same_domain_pi_1a_ca621f35",
+      "20260530_153247_evaluation_kshot_doppler_softmax_baseline_same_domain_pi_2a_95ac83ba",
+      "20260530_153247_evaluation_kshot_doppler_softmax_baseline_same_domain_pi_3a_6def0216",
+      "20260530_153247_evaluation_kshot_doppler_softmax_baseline_same_domain_pi_4a_95ad6e3b",
+      "20260530_153247_evaluation_kshot_raw_csi_mixed_proto_mixed_source_d60196cf",
+      "20260530_153247_evaluation_kshot_raw_csi_mixed_proto_same_domain_pi_1a_db2dbf0a",
+      "20260530_153247_evaluation_kshot_raw_csi_mixed_proto_same_domain_pi_2a_3bbed0b7",
+      "20260530_153247_evaluation_kshot_raw_csi_mixed_proto_same_domain_pi_3a_48d21ec3",
+      "20260530_153247_evaluation_kshot_raw_csi_mixed_proto_same_domain_pi_4a_a57abfb3"
+    ]
+  },
+  "artifacts": {
+    "plots": {
+      "mixed_source": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\comparisons\\20260530_raw_csi_domain_cross_vs_baselines\\mixed_source_kshot_comparison.png",
+      "target_pi4": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\comparisons\\20260530_raw_csi_domain_cross_vs_baselines\\target_pi4_kshot_comparison.png",
+      "source_same_domain_average": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\comparisons\\20260530_raw_csi_domain_cross_vs_baselines\\source_same_domain_average_kshot_comparison.png",
+      "per_domain": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\comparisons\\20260530_raw_csi_domain_cross_vs_baselines\\per_domain_kshot_comparison.png"
+    },
+    "run_dir": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\comparisons\\20260530_raw_csi_domain_cross_vs_baselines",
+    "input_records": [
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\20260530_raw_csi_proto_domain_separated\\mixed_source\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\20260530_raw_csi_proto_domain_separated\\same_domain_pi_1a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\20260530_raw_csi_proto_domain_separated\\same_domain_pi_2a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\20260530_raw_csi_proto_domain_separated\\same_domain_pi_3a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\20260530_raw_csi_proto_domain_separated\\same_domain_pi_4a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_featuremap_proto\\mixed_source\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_featuremap_proto\\same_domain_pi_1a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_featuremap_proto\\same_domain_pi_2a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_featuremap_proto\\same_domain_pi_3a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_featuremap_proto\\same_domain_pi_4a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_pooled_head_proto\\mixed_source\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_pooled_head_proto\\same_domain_pi_1a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_pooled_head_proto\\same_domain_pi_2a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_pooled_head_proto\\same_domain_pi_3a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_pooled_head_proto\\same_domain_pi_4a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_softmax_baseline\\mixed_source\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_softmax_baseline\\same_domain_pi_1a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_softmax_baseline\\same_domain_pi_2a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_softmax_baseline\\same_domain_pi_3a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\doppler_softmax_baseline\\same_domain_pi_4a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\raw_csi_mixed_proto\\mixed_source\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\raw_csi_mixed_proto\\same_domain_pi_1a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\raw_csi_mixed_proto\\same_domain_pi_2a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\raw_csi_mixed_proto\\same_domain_pi_3a\\record.json",
+      "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\registry\\evaluations\\raw_csi_mixed_proto\\same_domain_pi_4a\\record.json"
+    ]
+  }
+}
