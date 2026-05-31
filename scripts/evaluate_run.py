@@ -189,7 +189,6 @@ def evaluate_kshot(
         n_trials=n_trials,
         seed=seed,
         batch_size=batch_size,
-        embedding_fusion=embedding_fusion,
         metric=metric,
     )
     enrollment_dataset.clear_cache()
@@ -205,7 +204,6 @@ def evaluate_kshot(
             "n_trials": n_trials,
             "seed": seed,
             "batch_size": batch_size,
-            "embedding_fusion": embedding_fusion,
             "metric": metric,
         },
         "results": {
@@ -247,7 +245,7 @@ def extract_umap(
     model, _ = load_model_from_spec(spec, device=device, num_classes=len(DEFAULT_PERSONS), embedding_fusion=embedding_fusion)
     dataset, data_root = build_projection_dataset(project_root, spec.representation, domains=ALL_DOMAINS, persons=DEFAULT_PERSONS)
     indices, domains, persons = balanced_sample_indices(dataset, rng=rng, sample_per_group=sample_per_group, domains=ALL_DOMAINS, persons=DEFAULT_PERSONS)
-    embeddings, _ = extract_embeddings(model, dataset, device, batch_size=batch_size, indices=indices, embedding_fusion=embedding_fusion)
+    embeddings, _ = extract_embeddings(model, dataset, device, batch_size=batch_size, indices=indices)
     dataset.clear_cache()
 
     x = embeddings.numpy().astype(np.float32, copy=False)

@@ -35,26 +35,6 @@ class ModelSpec:
         }
 
 
-class RawCsiProtoModel(torch.nn.Module):
-    """Adapter that gives RawCsiTemporalEncoder the shared forward_embedding API."""
-
-    def __init__(self, config: dict[str, Any]):
-        super().__init__()
-        self.encoder = RawCsiTemporalEncoder(
-            in_channels=int(config.get("raw_in_channels", 4 * 242)),
-            embedding_dim=int(config.get("proto_embedding_dim", 128)),
-            channel_mixer_dim=int(config.get("raw_channel_mixer_dim", 128)),
-            hidden_dim=int(config.get("raw_hidden_dim", 256)),
-            normalize=True,
-        )
-
-    def forward_embedding(self, x, fusion=None):
-        return self.encoder.forward_embedding(x)
-
-    def forward(self, x):
-        return self.forward_embedding(x)
-
-
 def default_model_specs(project_root: str | Path) -> dict[str, ModelSpec]:
     root = Path(project_root)
     return {
@@ -147,31 +127,35 @@ def load_model_from_spec(
 ) -> tuple[torch.nn.Module, dict[str, Any]]:
     checkpoint = load_checkpoint(spec.checkpoint_path, device=device)
     if spec.builder == "legacy_sharp_classifier":
-        model = MultiAntennaModel(SingleAntennaModel(num_classes=num_classes)).to(device)
+        model = MultiAntennaModel(
+            SingleAntennaModel(num_classes=num_classes),
+            embedding_fusion=embedding_fusion,
+        ).to(device)
         return _load_with_lazy_init(
             model,
             checkpoint,
             device=device,
             window_size=window_size,
-            embedding_fusion=embedding_fusion,
             use_forward=True,
         ), checkpoint
 
     if spec.builder == "sharp_metric_encoder":
         config = checkpoint.get("config", {})
-        model = MultiAntennaEncoder(_build_sharp_encoder_from_config(config)).to(device)
+        model = MultiAntennaEncoder(
+            _build_sharp_encoder_from_config(config),
+            fusion=embedding_fusion,
+        ).to(device)
         return _load_with_lazy_init(
             model,
             checkpoint,
             device=device,
             window_size=window_size,
-            embedding_fusion=embedding_fusion,
             use_forward=False,
         ), checkpoint
 
     if spec.builder == "raw_csi_proto":
-        model = RawCsiProtoModel(checkpoint.get("config", {})).to(device)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model = _build_raw_csi_encoder_from_config(checkpoint.get("config", {})).to(device)
+        model.load_state_dict(_raw_csi_state_dict(checkpoint["model_state_dict"]))
         model.eval()
         return model, checkpoint
 
@@ -199,13 +183,29 @@ def _build_sharp_encoder_from_config(config: dict[str, Any]) -> torch.nn.Module:
     )
 
 
+def _build_raw_csi_encoder_from_config(config: dict[str, Any]) -> RawCsiTemporalEncoder:
+    return RawCsiTemporalEncoder(
+        in_channels=int(config.get("raw_in_channels", 4 * 242)),
+        embedding_dim=int(config.get("proto_embedding_dim", 128)),
+        channel_mixer_dim=int(config.get("raw_channel_mixer_dim", 128)),
+        hidden_dim=int(config.get("raw_hidden_dim", 256)),
+        normalize=True,
+    )
+
+
+def _raw_csi_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Load old wrapped raw-CSI checkpoints without keeping the wrapper class."""
+    if state_dict and all(key.startswith("encoder.") for key in state_dict):
+        return {key.removeprefix("encoder."): value for key, value in state_dict.items()}
+    return state_dict
+
+
 def _load_with_lazy_init(
     model: torch.nn.Module,
     checkpoint: dict[str, Any],
     *,
     device: str | torch.device,
     window_size: int,
-    embedding_fusion: str,
     use_forward: bool,
 ) -> torch.nn.Module:
     try:
@@ -216,7 +216,7 @@ def _load_with_lazy_init(
             if use_forward:
                 model(dummy)
             else:
-                model.forward_embedding(dummy, fusion=embedding_fusion)
+                model.forward_embedding(dummy)
         model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model

@@ -186,9 +186,10 @@ class SharpPooledSingleAntennaEncoder(torch.nn.Module):
 class MultiAntennaClassifier(torch.nn.Module):
     """Apply one shared single-antenna classifier to each antenna stream."""
 
-    def __init__(self, single_antenna_model: torch.nn.Module):
+    def __init__(self, single_antenna_model: torch.nn.Module, embedding_fusion: str = "mean"):
         super().__init__()
         self.backbone = single_antenna_model
+        self.embedding_fusion = embedding_fusion
 
     def forward_antennas(self, x):
         batch_size, num_antennas, time_steps, doppler_bins = x.shape
@@ -202,9 +203,9 @@ class MultiAntennaClassifier(torch.nn.Module):
         embeddings = self.backbone.forward_embedding(x)
         return embeddings.reshape(batch_size, num_antennas, -1)
 
-    def forward_embedding(self, x, fusion="mean"):
+    def forward_embedding(self, x):
         embeddings = self.forward_antenna_embeddings(x)
-        return fuse_antennas(embeddings, fusion)
+        return fuse_antennas(embeddings, self.embedding_fusion)
 
     def forward(self, x, fusion="sum"):
         logits = self.forward_antennas(x)
@@ -235,9 +236,10 @@ class MultiAntennaClassifier(torch.nn.Module):
 class MultiAntennaEncoder(torch.nn.Module):
     """Apply one shared single-antenna encoder to each antenna stream."""
 
-    def __init__(self, single_antenna_encoder: torch.nn.Module):
+    def __init__(self, single_antenna_encoder: torch.nn.Module, fusion: str = "mean"):
         super().__init__()
         self.backbone = single_antenna_encoder
+        self.fusion = fusion
 
     def forward_antenna_embeddings(self, x):
         batch_size, num_antennas, time_steps, doppler_bins = x.shape
@@ -245,15 +247,15 @@ class MultiAntennaEncoder(torch.nn.Module):
         embeddings = self.backbone.forward_embedding(x)
         return embeddings.reshape(batch_size, num_antennas, -1)
 
-    def forward_embedding(self, x, fusion="mean"):
+    def forward_embedding(self, x):
         embeddings = self.forward_antenna_embeddings(x)
-        fused = fuse_antennas(embeddings, fusion)
-        if fusion in {"mean", "sum"}:
+        fused = fuse_antennas(embeddings, self.fusion)
+        if self.fusion in {"mean", "sum"}:
             fused = F.normalize(fused, dim=1)
         return fused
 
-    def forward(self, x, fusion="mean"):
-        return self.forward_embedding(x, fusion=fusion)
+    def forward(self, x):
+        return self.forward_embedding(x)
 
 
 def fuse_antennas(values: torch.Tensor, fusion: str):

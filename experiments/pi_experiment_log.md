@@ -1177,3 +1177,170 @@ support PI-3a -> query PI-1a
 ```
 
 This directly trains the embedding to make same-person prototypes useful across domain changes. It is a better next step than simply increasing model size, because the current raw CSI model already fits source identities very well.
+
+## 2026-05-31 - Domain-Separated Raw CSI Prototypical Training
+
+After the raw CSI mixed-source prototypical baseline, we trained a second raw CSI prototypical model with domain-separated source episodes.
+
+Artifacts:
+
+- Run directory: [experiments/runs/20260530_raw_csi_proto_domain_separated](../experiments/runs/20260530_raw_csi_proto_domain_separated)
+- K-shot comparison plots: [comparisons/kshot_vs_baselines](../experiments/runs/20260530_raw_csi_proto_domain_separated/comparisons/kshot_vs_baselines)
+- UMAP comparison plot: [embedding_umap_person_domain.png](../experiments/runs/20260530_raw_csi_proto_domain_separated/comparisons/umap_vs_baselines/embedding_umap_person_domain.png)
+
+![Mixed-source K-shot comparison](../experiments/runs/20260530_raw_csi_proto_domain_separated/comparisons/kshot_vs_baselines/mixed_source_kshot_comparison.png)
+
+![Target PI-4a K-shot comparison](../experiments/runs/20260530_raw_csi_proto_domain_separated/comparisons/kshot_vs_baselines/target_pi4_kshot_comparison.png)
+
+![Per-domain K-shot comparison](../experiments/runs/20260530_raw_csi_proto_domain_separated/comparisons/kshot_vs_baselines/per_domain_kshot_comparison.png)
+
+![UMAP comparison](../experiments/runs/20260530_raw_csi_proto_domain_separated/comparisons/umap_vs_baselines/embedding_umap_person_domain.png)
+
+### Training Protocol
+
+The earlier raw CSI prototypical model used mixed-source episodes. Support and query samples were sampled only by person label from the pooled source-domain dataset:
+
+```text
+source domains: PI-1a, PI-2a, PI-3a
+support: mixed source domains
+query:   mixed source domains
+```
+
+This means that a prototype for one person can average windows from multiple source domains:
+
+```text
+prototype(p03) = mean(p03 from PI-1a, PI-2a, PI-3a)
+```
+
+The domain-separated model instead used episodes where support and query came from different single source domains:
+
+```text
+support: one source domain
+query:   a different source domain
+```
+
+Example:
+
+```text
+support: PI-1a
+query:   PI-3a
+```
+
+For that episode, all person prototypes are built from the same support domain:
+
+```text
+prototype(p03) = mean(p03 windows from PI-1a)
+prototype(p05) = mean(p05 windows from PI-1a)
+...
+query windows  = p03, p05, ... from PI-3a
+```
+
+The intended pressure was to make identity matching work despite a domain mismatch between prototypes and queries.
+
+### K-Shot Results
+
+K=100 summary:
+
+```text
+model                              mixed source   PI-1a   PI-2a   PI-3a   PI-4a
+raw CSI mixed proto                    0.894       0.932   0.830   0.942   0.447
+raw CSI domain-separated proto         0.434       0.739   0.560   0.744   0.530
+Doppler feature-map proto              0.263       0.867   0.775   0.629   0.631
+Doppler softmax baseline               0.295       0.430   0.403   0.350   0.342
+Doppler pooled-head proto              0.280       0.481   0.232   0.356   0.232
+```
+
+The domain-separated raw CSI model improved target-domain `PI-4a` same-domain K-shot accuracy over the mixed raw CSI model:
+
+```text
+raw CSI mixed proto:             0.447
+raw CSI domain-separated proto:  0.530
+```
+
+However, it performed much worse on the pooled source-domain protocol:
+
+```text
+raw CSI mixed proto:             0.894
+raw CSI domain-separated proto:  0.434
+```
+
+It also remained below the Doppler feature-map prototype baseline on `PI-4a` at high K:
+
+```text
+raw CSI domain-separated proto:  0.530
+Doppler feature-map proto:       0.631
+```
+
+### UMAP Interpretation
+
+The UMAP visualization shows that the domain-separated raw CSI model still clusters very strongly by domain. The right-hand domain-colored panel for the domain-separated model forms clear PI-domain islands. The left-hand person-colored panel shows that person labels are mixed inside those domain islands rather than globally aligned across domains.
+
+This means the domain-separated episode objective did not remove domain information from the embedding. It only changed the training pressure from:
+
+```text
+match identities inside a mixed source-domain pool
+```
+
+to:
+
+```text
+match identities from one source domain to another source domain
+```
+
+Those are not equivalent to explicitly learning a domain-invariant identity embedding.
+
+### Why Mixed Training May Have Helped
+
+A useful mental model is:
+
+```text
+embedding = identity component + domain component + noise
+```
+
+In mixed-source prototypical training, support examples for one person can come from multiple domains. Therefore the prototype can average domain components:
+
+```text
+prototype(person) = mean(identity + domain + noise)
+```
+
+If the K support windows come from several source domains, the domain component becomes a rough average of `PI-1a`, `PI-2a`, and `PI-3a`. This can behave like crude domain smoothing. It may reduce the dominance of one specific source-domain component in the prototype.
+
+In domain-separated training, each episode has a clear support domain and a clear query domain:
+
+```text
+prototype(person) = identity + support-domain component
+query             = identity + query-domain component
+```
+
+The intended effect was to force the model to ignore the mismatch. But raw CSI appears to encode domain/setup information so strongly that the prototypical objective alone did not create true domain invariance. Instead, the model lost much of the easy source-domain structure and only modestly improved target-domain same-domain performance.
+
+### Conclusion
+
+This run suggests that domain-separated episodic training is not enough by itself to make raw CSI embeddings domain-invariant.
+
+The result is still useful:
+
+```text
+raw CSI mixed proto:
+  excellent source-domain identity performance
+  weak target-domain behavior
+
+raw CSI domain-separated proto:
+  weaker source-domain performance
+  modestly better PI-4a behavior
+  still strongly domain-clustered
+
+Doppler feature-map proto:
+  weaker mixed-source performance
+  stronger high-K target-domain same-domain performance
+```
+
+The important interpretation is:
+
+```text
+Raw CSI contains strong person information, but it is heavily domain-entangled.
+Changing the episodic support/query sampling helps a little on PI-4a, but does not
+solve domain invariance.
+```
+
+To force domain-invariant identity embeddings, the next method likely needs an explicit representation-learning pressure, such as supervised contrastive learning with same-person cross-domain positives, domain-balanced batches, or a domain-confusion/adversarial objective. A prototypical loss alone does not explicitly penalize domain information in the embedding.

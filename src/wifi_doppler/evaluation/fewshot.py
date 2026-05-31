@@ -36,7 +36,6 @@ def evaluate_kshot(
     n_trials: int = 20,
     seed: int = 0,
     batch_size: int = 128,
-    embedding_fusion: str = "mean",
     metric: str = "cosine",
 ) -> dict[int, dict[str, float | list[float]]]:
     """Evaluate K-shot prototype inference.
@@ -55,7 +54,6 @@ def evaluate_kshot(
         query_dataset,
         device,
         batch_size=batch_size,
-        embedding_fusion=embedding_fusion,
     )
 
     results = {}
@@ -70,7 +68,6 @@ def evaluate_kshot(
                 device,
                 batch_size=batch_size,
                 indices=enrollment_indices,
-                embedding_fusion=embedding_fusion,
             )
             prototypes, prototype_labels = compute_prototypes(enrollment_embeddings, selected_true_labels)
             accuracy = prototype_accuracy(

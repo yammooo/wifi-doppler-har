@@ -10,7 +10,6 @@ def extract_embeddings(
     device: str | torch.device,
     batch_size: int = 128,
     indices: Sequence[int] | None = None,
-    embedding_fusion: str = "mean",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run inference and return embeddings and labels on CPU.
 
@@ -27,7 +26,7 @@ def extract_embeddings(
     with torch.no_grad():
         for x, y in dataloader:
             x = x.to(device)
-            batch_embeddings = model.forward_embedding(x, fusion=embedding_fusion)
+            batch_embeddings = model.forward_embedding(x)
             embeddings.append(batch_embeddings.cpu())
             labels.append(y.cpu())
 

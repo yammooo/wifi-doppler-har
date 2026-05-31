@@ -169,6 +169,45 @@ def load_episode(dataset, support_indices: np.ndarray, query_indices: np.ndarray
     )
 
 
+def load_episode_by_recording(dataset, support_indices: np.ndarray, query_indices: np.ndarray) -> Episode:
+    """Load an episode while reading each backing recording at most once.
+
+    This is useful for raw CSI windows, where loading many windows through
+    ``dataset[index]`` can repeatedly touch the same large trace file.
+    """
+    support_x, support_y = load_windows_by_recording(dataset, support_indices)
+    query_x, query_y = load_windows_by_recording(dataset, query_indices)
+    return Episode(
+        support_x=support_x,
+        support_y=support_y,
+        query_x=query_x,
+        query_y=query_y,
+    )
+
+
+def load_windows_by_recording(dataset, indices: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load selected dataset windows while reading each recording at most once."""
+    if len(indices) == 0:
+        raise ValueError("indices must contain at least one window.")
+
+    by_recording = {}
+    for position, dataset_idx in enumerate(indices):
+        window = dataset.window_indexes[int(dataset_idx)]
+        by_recording.setdefault(window.recording_idx, []).append((position, window))
+
+    samples = [None] * len(indices)
+    labels = [None] * len(indices)
+    for recording_idx, items in by_recording.items():
+        recording = dataset.traces[recording_idx]
+        csi = recording.load()
+        label = torch.tensor(dataset._label_to_index(recording.ground_truth), dtype=torch.long)
+        for position, window in items:
+            samples[position] = dataset.slice_csi_window(csi, window.start, window.end)
+            labels[position] = label
+
+    return torch.stack(samples), torch.stack(labels)
+
+
 def sample_cross_dataset_episode_indices(
     support_labels: np.ndarray,
     query_labels: np.ndarray,
@@ -223,6 +262,23 @@ def load_cross_dataset_episode(
     )
 
 
+def load_cross_dataset_episode_by_recording(
+    support_dataset,
+    support_indices: np.ndarray,
+    query_dataset,
+    query_indices: np.ndarray,
+) -> Episode:
+    """Load a cross-dataset episode with per-recording loading."""
+    support_x, support_y = load_windows_by_recording(support_dataset, support_indices)
+    query_x, query_y = load_windows_by_recording(query_dataset, query_indices)
+    return Episode(
+        support_x=support_x,
+        support_y=support_y,
+        query_x=query_x,
+        query_y=query_y,
+    )
+
+
 def sample_episode(
     dataset,
     *,
@@ -248,7 +304,6 @@ def prototypical_loss(
     episode: Episode,
     *,
     device: str | torch.device,
-    embedding_fusion: str = "mean",
     metric: str = "cosine",
     temperature: float = 1.0,
     normalize_prototypes: bool = True,
@@ -262,8 +317,8 @@ def prototypical_loss(
     query_x = episode.query_x.to(device)
     query_y = episode.query_y.to(device)
 
-    support_embeddings = model.forward_embedding(support_x, fusion=embedding_fusion)
-    query_embeddings = model.forward_embedding(query_x, fusion=embedding_fusion)
+    support_embeddings = model.forward_embedding(support_x)
+    query_embeddings = model.forward_embedding(query_x)
 
     prototypes, prototype_labels = compute_prototypes(
         support_embeddings,
@@ -278,6 +333,93 @@ def prototypical_loss(
     return loss, accuracy
 
 
+def evaluate_same_dataset_episodes(
+    model: torch.nn.Module,
+    dataset,
+    labels: np.ndarray,
+    *,
+    device: str | torch.device,
+    n_episodes: int,
+    n_way: int,
+    k_shot: int,
+    q_query: int,
+    rng: np.random.Generator,
+    metric: str = "cosine",
+    temperature: float = 1.0,
+    fast_by_recording: bool = False,
+) -> dict[str, float]:
+    """Evaluate sampled prototypical episodes from one dataset."""
+    loader = load_episode_by_recording if fast_by_recording else load_episode
+    model.eval()
+    total_loss = 0.0
+    total_acc = 0.0
+    with torch.no_grad():
+        for _ in range(n_episodes):
+            support_indices, query_indices = sample_episode_indices(
+                labels,
+                n_way=n_way,
+                k_shot=k_shot,
+                q_query=q_query,
+                rng=rng,
+            )
+            episode = loader(dataset, support_indices, query_indices)
+            loss, acc = prototypical_loss(
+                model,
+                episode,
+                device=device,
+                metric=metric,
+                temperature=temperature,
+            )
+            total_loss += loss.item()
+            total_acc += acc
+    return {"loss": total_loss / n_episodes, "acc": total_acc / n_episodes}
+
+
+def evaluate_cross_dataset_episodes(
+    model: torch.nn.Module,
+    support_dataset,
+    support_labels: np.ndarray,
+    query_dataset,
+    query_labels: np.ndarray,
+    *,
+    device: str | torch.device,
+    n_episodes: int,
+    n_way: int,
+    k_shot: int,
+    q_query: int,
+    rng: np.random.Generator,
+    metric: str = "cosine",
+    temperature: float = 1.0,
+    fast_by_recording: bool = False,
+) -> dict[str, float]:
+    """Evaluate prototypical episodes with support/query from separate datasets."""
+    loader = load_cross_dataset_episode_by_recording if fast_by_recording else load_cross_dataset_episode
+    model.eval()
+    total_loss = 0.0
+    total_acc = 0.0
+    with torch.no_grad():
+        for _ in range(n_episodes):
+            support_indices, query_indices = sample_cross_dataset_episode_indices(
+                support_labels,
+                query_labels,
+                n_way=n_way,
+                k_shot=k_shot,
+                q_query=q_query,
+                rng=rng,
+            )
+            episode = loader(support_dataset, support_indices, query_dataset, query_indices)
+            loss, acc = prototypical_loss(
+                model,
+                episode,
+                device=device,
+                metric=metric,
+                temperature=temperature,
+            )
+            total_loss += loss.item()
+            total_acc += acc
+    return {"loss": total_loss / n_episodes, "acc": total_acc / n_episodes}
+
+
 def run_prototypical_steps(
     model: torch.nn.Module,
     dataset,
@@ -289,7 +431,6 @@ def run_prototypical_steps(
     k_shot: int,
     q_query: int,
     rng: np.random.Generator,
-    embedding_fusion: str = "mean",
     metric: str = "cosine",
     temperature: float = 1.0,
 ) -> dict[str, float]:
@@ -312,7 +453,6 @@ def run_prototypical_steps(
             model,
             episode,
             device=device,
-            embedding_fusion=embedding_fusion,
             metric=metric,
             temperature=temperature,
         )
