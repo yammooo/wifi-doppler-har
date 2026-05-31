@@ -1,0 +1,27 @@
+{
+  "model_run_id": "doppler_featuremap_proto",
+  "label": "Doppler feature-map proto",
+  "short_label": "Doppler feature-map proto",
+  "model_key": "old_proto_featuremap",
+  "representation": "doppler",
+  "builder": "legacy_sharp_classifier",
+  "training_objective": "prototypical",
+  "episode_style": "mixed-source",
+  "notes": null,
+  "checkpoint": {
+    "path": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\runs\\doppler_featuremap_proto\\model.pt",
+    "exists": true,
+    "size_bytes": 1031623,
+    "mtime": "2026-05-27T14:47:22+00:00",
+    "sha256_16": "5bc10f81b3b6a5b3"
+  },
+  "source_checkpoint": {
+    "path": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\few_shot_proto_evaluation\\proto_multi_antenna_vs_softmax_baseline_20260527_164722\\proto_model.pt",
+    "exists": true,
+    "size_bytes": 1031623,
+    "mtime": "2026-05-27T14:47:22+00:00",
+    "sha256_16": "5bc10f81b3b6a5b3"
+  },
+  "updated_at": "2026-05-31T10:26:08+00:00",
+  "created_at": "2026-05-31T10:26:08+00:00"
+}

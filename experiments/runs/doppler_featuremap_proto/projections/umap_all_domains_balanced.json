@@ -1,0 +1,43 @@
+{
+  "record_type": "projection.umap",
+  "created_at": "2026-05-31T10:32:14+00:00",
+  "model_run_id": "doppler_featuremap_proto",
+  "projection_name": "umap_all_domains_balanced",
+  "dataset": {
+    "representation": "doppler",
+    "data_root": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\data\\doppler_traces_pi",
+    "domains": [
+      "PI-1a",
+      "PI-2a",
+      "PI-3a",
+      "PI-4a"
+    ],
+    "persons": [
+      "p03",
+      "p05",
+      "p06",
+      "p07",
+      "p08",
+      "p09",
+      "p10",
+      "p11",
+      "p12",
+      "p13"
+    ],
+    "split": [
+      0.0,
+      0.8
+    ],
+    "sampled_windows": 3000
+  },
+  "parameters": {
+    "sample_per_person_domain": 75,
+    "pca_components": 50,
+    "umap_neighbors": 30,
+    "umap_min_dist": 0.1,
+    "seed": 0
+  },
+  "artifacts": {
+    "coordinates": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\runs\\doppler_featuremap_proto\\projections\\umap_all_domains_balanced.npz"
+  }
+}

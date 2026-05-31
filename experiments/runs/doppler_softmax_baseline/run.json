@@ -1,0 +1,27 @@
+{
+  "model_run_id": "doppler_softmax_baseline",
+  "label": "Doppler softmax baseline",
+  "short_label": "Doppler softmax baseline",
+  "model_key": "softmax_featuremap",
+  "representation": "doppler",
+  "builder": "legacy_sharp_classifier",
+  "training_objective": "softmax",
+  "episode_style": "source-domains-classification",
+  "notes": null,
+  "checkpoint": {
+    "path": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\runs\\doppler_softmax_baseline\\model.pt",
+    "exists": true,
+    "size_bytes": 1031387,
+    "mtime": "2026-05-25T14:54:39+00:00",
+    "sha256_16": "dd041a6fa69be04c"
+  },
+  "source_checkpoint": {
+    "path": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\pi_classification\\pi_all_persons_123_train_4_test_sharp_model_20260525_165437\\model.pt",
+    "exists": true,
+    "size_bytes": 1031387,
+    "mtime": "2026-05-25T14:54:39+00:00",
+    "sha256_16": "dd041a6fa69be04c"
+  },
+  "updated_at": "2026-05-31T10:32:40+00:00",
+  "created_at": "2026-05-31T10:32:40+00:00"
+}

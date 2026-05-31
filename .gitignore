@@ -31,7 +31,6 @@ phase_processing/
 input_files/
 outputs/
 results/
-runs/
 checkpoints/
 *.h5
 *.pt

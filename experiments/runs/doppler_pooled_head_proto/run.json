@@ -1,0 +1,27 @@
+{
+  "model_run_id": "doppler_pooled_head_proto",
+  "label": "Doppler pooled-head proto",
+  "short_label": "Doppler pooled-head proto",
+  "model_key": "pooled_proto",
+  "representation": "doppler",
+  "builder": "sharp_metric_encoder",
+  "training_objective": "prototypical",
+  "episode_style": "mixed-source",
+  "notes": null,
+  "checkpoint": {
+    "path": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\runs\\doppler_pooled_head_proto\\model.pt",
+    "exists": true,
+    "size_bytes": 262215,
+    "mtime": "2026-05-28T20:24:34+00:00",
+    "sha256_16": "8d415f737e4af9ef"
+  },
+  "source_checkpoint": {
+    "path": "C:\\Users\\gianm\\Development\\wifi-doppler-har\\experiments\\few_shot_proto_evaluation\\proto_pooled_head_vs_softmax_baseline_20260528_220334\\proto_model.pt",
+    "exists": true,
+    "size_bytes": 262215,
+    "mtime": "2026-05-28T20:24:34+00:00",
+    "sha256_16": "8d415f737e4af9ef"
+  },
+  "updated_at": "2026-05-31T10:37:47+00:00",
+  "created_at": "2026-05-31T10:37:47+00:00"
+}

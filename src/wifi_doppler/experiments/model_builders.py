@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from wifi_doppler.experiments.registry import checkpoint_fingerprint
+from wifi_doppler.experiments.runs import checkpoint_fingerprint
 from wifi_doppler.models.raw_csi import RawCsiTemporalEncoder
 from wifi_doppler.models.sharp import (
     MultiAntennaEncoder,
