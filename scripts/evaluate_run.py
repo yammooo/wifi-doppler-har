@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 from typing import Any
@@ -29,7 +30,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--training-objective", default=None)
     parser.add_argument("--episode-style", default=None)
     parser.add_argument("--notes", default=None)
-    parser.add_argument("--protocols", nargs="+", default=["mixed_source", "same_domain_PI-1a", "same_domain_PI-2a", "same_domain_PI-3a", "same_domain_PI-4a"])
+    parser.add_argument(
+        "--protocols",
+        nargs="+",
+        default=[
+            "mixed_source",
+            "cross_domain_source_to_PI-4a",
+            "same_domain_PI-1a",
+            "same_domain_PI-2a",
+            "same_domain_PI-3a",
+            "same_domain_PI-4a",
+        ],
+    )
     parser.add_argument("--baseline-run-ids", nargs="*", default=[])
     parser.add_argument("--comparison-name", default="kshot_vs_baselines")
     parser.add_argument("--umap-comparison-name", default="umap_vs_baselines")
@@ -47,7 +59,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-guard", type=int, default=31)
     parser.add_argument("--embedding-fusion", default="mean")
     parser.add_argument("--metric", default="cosine")
-    parser.add_argument("--projection-name", default="umap_all_domains_balanced")
+    parser.add_argument("--projection-name", default="umap_all_domains_heldout")
+    parser.add_argument("--projection-split-start", type=float, default=0.8)
+    parser.add_argument("--projection-split-end", type=float, default=1.0)
+    parser.add_argument(
+        "--projection-part",
+        action="append",
+        default=None,
+        help=(
+            "Named projection subset as name:domain1,domain2:start:end. "
+            "Can be repeated. If omitted, uses one heldout part with all domains "
+            "and --projection-split-start/end."
+        ),
+    )
     parser.add_argument("--sample-per-person-domain", type=int, default=75)
     parser.add_argument("--pca-components", type=int, default=50)
     parser.add_argument("--umap-neighbors", type=int, default=30)
@@ -124,6 +148,8 @@ def main() -> None:
             pca_components=args.pca_components,
             umap_neighbors=args.umap_neighbors,
             umap_min_dist=args.umap_min_dist,
+            projection_split=(args.projection_split_start, args.projection_split_end),
+            projection_part_specs=args.projection_part,
             embedding_fusion=args.embedding_fusion,
         )
         print("projection:", path)
@@ -230,6 +256,8 @@ def extract_umap(
     pca_components: int,
     umap_neighbors: int,
     umap_min_dist: float,
+    projection_split: tuple[float, float],
+    projection_part_specs: list[str] | None,
     embedding_fusion: str,
 ) -> Path:
     from sklearn.decomposition import PCA
@@ -243,12 +271,24 @@ def extract_umap(
 
     rng = np.random.default_rng(seed)
     model, _ = load_model_from_spec(spec, device=device, num_classes=len(DEFAULT_PERSONS), embedding_fusion=embedding_fusion)
-    dataset, data_root = build_projection_dataset(project_root, spec.representation, domains=ALL_DOMAINS, persons=DEFAULT_PERSONS)
-    indices, domains, persons = balanced_sample_indices(dataset, rng=rng, sample_per_group=sample_per_group, domains=ALL_DOMAINS, persons=DEFAULT_PERSONS)
-    embeddings, _ = extract_embeddings(model, dataset, device, batch_size=batch_size, indices=indices)
-    dataset.clear_cache()
+    parts = parse_projection_parts(
+        projection_part_specs,
+        default_domains=ALL_DOMAINS,
+        default_split=projection_split,
+    )
+    projection_data, data_root = extract_projection_embeddings(
+        project_root=project_root,
+        representation=spec.representation,
+        model=model,
+        device=device,
+        parts=parts,
+        persons=DEFAULT_PERSONS,
+        rng=rng,
+        sample_per_group=sample_per_group,
+        batch_size=batch_size,
+    )
 
-    x = embeddings.numpy().astype(np.float32, copy=False)
+    x = projection_data["embeddings"]
     if x.shape[1] > pca_components:
         n_components = min(pca_components, x.shape[0] - 1, x.shape[1])
         x_for_umap = PCA(n_components=n_components, random_state=seed).fit_transform(x)
@@ -267,9 +307,10 @@ def extract_umap(
     npz_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         npz_path,
-        indices=indices,
-        domains=domains.astype(str),
-        persons=persons.astype(str),
+        indices=projection_data["indices"],
+        domains=projection_data["domains"],
+        persons=projection_data["persons"],
+        parts=projection_data["parts"],
         embeddings=x,
         input_to_umap=x_for_umap.astype(np.float32, copy=False),
         umap=coords.astype(np.float32),
@@ -282,10 +323,9 @@ def extract_umap(
         "dataset": {
             "representation": spec.representation,
             "data_root": str(data_root.resolve()),
-            "domains": list(ALL_DOMAINS),
             "persons": list(DEFAULT_PERSONS),
-            "split": [0.0, 0.8],
-            "sampled_windows": int(indices.size),
+            "parts": [part.to_record() for part in parts],
+            "sampled_windows": int(x.shape[0]),
         },
         "parameters": {
             "sample_per_person_domain": sample_per_group,
@@ -299,7 +339,124 @@ def extract_umap(
     return save_json(projection_record_path(project_root, spec.key, projection_name), record)
 
 
-def build_projection_dataset(project_root: Path, representation: str, *, domains: tuple[str, ...], persons: tuple[str, ...]):
+@dataclass(frozen=True)
+class ProjectionPart:
+    name: str
+    domains: tuple[str, ...]
+    split: tuple[float, float]
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "domains": list(self.domains),
+            "split": list(self.split),
+        }
+
+
+def parse_projection_parts(
+    part_specs: list[str] | None,
+    *,
+    default_domains: tuple[str, ...],
+    default_split: tuple[float, float],
+) -> list[ProjectionPart]:
+    """Parse projection parts or build the default single held-out part."""
+    if not part_specs:
+        return [
+            ProjectionPart(
+                name="heldout",
+                domains=tuple(default_domains),
+                split=default_split,
+            )
+        ]
+
+    parts = []
+    for spec in part_specs:
+        fields = spec.split(":")
+        if len(fields) != 4:
+            raise ValueError(
+                "Projection parts must use name:domain1,domain2:start:end, "
+                f"got {spec!r}."
+            )
+        name, domains_text, start_text, end_text = fields
+        domains = tuple(domain.strip() for domain in domains_text.split(",") if domain.strip())
+        if not name or not domains:
+            raise ValueError(f"Projection part must have a name and at least one domain: {spec!r}")
+        split = (float(start_text), float(end_text))
+        if not (0 <= split[0] < split[1] <= 1):
+            raise ValueError(f"Projection split must satisfy 0 <= start < end <= 1: {spec!r}")
+        unknown_domains = set(domains) - set(default_domains)
+        if unknown_domains:
+            raise ValueError(f"Unknown projection domains {sorted(unknown_domains)} in {spec!r}")
+        parts.append(ProjectionPart(name=name, domains=domains, split=split))
+
+    names = [part.name for part in parts]
+    if len(names) != len(set(names)):
+        raise ValueError(f"Projection part names must be unique, got {names}.")
+    return parts
+
+
+def extract_projection_embeddings(
+    *,
+    project_root: Path,
+    representation: str,
+    model: torch.nn.Module,
+    device: torch.device,
+    parts: list[ProjectionPart],
+    persons: tuple[str, ...],
+    rng: np.random.Generator,
+    sample_per_group: int,
+    batch_size: int,
+) -> tuple[dict[str, np.ndarray], Path]:
+    from wifi_doppler.representation.embeddings import extract_embeddings
+
+    embedding_chunks = []
+    index_chunks = []
+    domain_chunks = []
+    person_chunks = []
+    part_chunks = []
+    data_root = None
+
+    for part in parts:
+        dataset, data_root = build_projection_dataset(
+            project_root,
+            representation,
+            domains=part.domains,
+            persons=persons,
+            split=part.split,
+        )
+        indices, domains, sampled_persons = balanced_sample_indices(
+            dataset,
+            rng=rng,
+            sample_per_group=sample_per_group,
+            domains=part.domains,
+            persons=persons,
+        )
+        embeddings, _ = extract_embeddings(model, dataset, device, batch_size=batch_size, indices=indices)
+        dataset.clear_cache()
+
+        embedding_chunks.append(embeddings.numpy().astype(np.float32, copy=False))
+        index_chunks.append(indices.astype(np.int64, copy=False))
+        domain_chunks.append(domains.astype(str))
+        person_chunks.append(sampled_persons.astype(str))
+        part_chunks.append(np.full(indices.shape[0], part.name, dtype=object))
+
+    return {
+        "embeddings": np.concatenate(embedding_chunks, axis=0),
+        "indices": np.concatenate(index_chunks, axis=0),
+        "domains": np.concatenate(domain_chunks, axis=0),
+        "persons": np.concatenate(person_chunks, axis=0),
+        "parts": np.concatenate(part_chunks, axis=0),
+    }, data_root
+
+
+def build_projection_dataset(
+    project_root: Path,
+    representation: str,
+    *,
+    domains: tuple[str, ...],
+    persons: tuple[str, ...],
+    split: tuple[float, float],
+):
     from wifi_doppler.data.doppler_dataset import DopplerWindowDataset
     from wifi_doppler.data.raw_csi_dataset import RawCsiWindowDataset
 
@@ -308,7 +465,7 @@ def build_projection_dataset(project_root: Path, representation: str, *, domains
         return RawCsiWindowDataset(
             data_root,
             scenarios=list(domains),
-            split=(0.0, 0.8),
+            split=split,
             labels=persons,
             flatten_channels=True,
             cache_traces=True,
@@ -318,7 +475,7 @@ def build_projection_dataset(project_root: Path, representation: str, *, domains
         return DopplerWindowDataset(
             data_root,
             scenarios=list(domains),
-            split=(0.0, 0.8),
+            split=split,
             labels=persons,
         ), data_root
     raise ValueError(f"Unknown representation: {representation}")
@@ -383,6 +540,21 @@ def plot_kshot_comparison(project_root: Path, owner_run_id: str, comparison_name
         ax.legend()
         fig.tight_layout()
         plots["target_pi4"] = str(save_figure(fig, out_dir, "target_pi4_kshot_comparison.png").resolve())
+
+    if "cross_domain_source_to_PI-4a" in by_protocol:
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        plot_protocol(
+            ax,
+            project_root,
+            by_protocol["cross_domain_source_to_PI-4a"],
+            title="Cross-domain K-shot: source enrollment -> PI-4a query",
+            ylabel="query accuracy",
+        )
+        ax.legend()
+        fig.tight_layout()
+        plots["cross_domain_source_to_pi4"] = str(
+            save_figure(fig, out_dir, "cross_domain_source_to_pi4_kshot_comparison.png").resolve()
+        )
 
     if all(f"same_domain_{domain}" in by_protocol for domain in SOURCE_DOMAINS):
         fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -462,19 +634,25 @@ def plot_umap_comparison(project_root: Path, owner_run_id: str, comparison_name:
     from wifi_doppler.experiments.runs import comparison_dir, load_json, projection_record_path, utc_now
 
     records = [load_json(projection_record_path(project_root, run_id, projection_name)) for run_id in run_ids]
+    # Some projections generated during development stored string labels as
+    # object arrays. Future projections use normal Unicode arrays, but allowing
+    # pickle here keeps those local generated artifacts plottable.
+    projection_data = [np.load(record["artifacts"]["coordinates"], allow_pickle=True) for record in records]
+    show_parts = any("parts" in data.files and np.unique(data["parts"].astype(str)).size > 1 for data in projection_data)
+    ncols = 3 if show_parts else 2
     out_dir = comparison_dir(project_root, owner_run_id, comparison_name)
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(len(records), 2, figsize=(13, 4.5 * len(records)), squeeze=False)
+    fig, axes = plt.subplots(len(records), ncols, figsize=(6.5 * ncols, 4.5 * len(records)), squeeze=False)
     person_colors = plt.get_cmap("tab10")(np.linspace(0, 1, len(DEFAULT_PERSONS)))
     domain_colors = plt.get_cmap("tab10")(np.linspace(0, 1, len(ALL_DOMAINS)))
     person_to_color = dict(zip(DEFAULT_PERSONS, person_colors, strict=True))
     domain_to_color = dict(zip(ALL_DOMAINS, domain_colors, strict=True))
 
-    for row, record in enumerate(records):
-        data = np.load(record["artifacts"]["coordinates"], allow_pickle=False)
+    for row, (record, data) in enumerate(zip(records, projection_data, strict=True)):
         coords = data["umap"]
         persons = data["persons"].astype(str)
         domains = data["domains"].astype(str)
+        parts = data["parts"].astype(str) if "parts" in data.files else np.full(persons.shape, "projection")
         label = load_run_label(project_root, record["model_run_id"])
 
         ax = axes[row, 0]
@@ -493,11 +671,25 @@ def plot_umap_comparison(project_root: Path, owner_run_id: str, comparison_name:
         ax.set_xticks([])
         ax.set_yticks([])
 
+        if show_parts:
+            ax = axes[row, 2]
+            unique_parts = sorted(np.unique(parts).tolist())
+            part_colors = plt.get_cmap("tab10")(np.linspace(0, 1, len(unique_parts)))
+            for part, color in zip(unique_parts, part_colors, strict=True):
+                mask = parts == part
+                ax.scatter(coords[mask, 0], coords[mask, 1], s=7, alpha=0.55, color=color, label=part, linewidths=0)
+            ax.set_title(f"{label} colored by projection part")
+            ax.set_xticks([])
+            ax.set_yticks([])
+
     axes[0, 0].legend(loc="best", fontsize=7, markerscale=2, ncol=2)
     axes[0, 1].legend(loc="best", fontsize=8, markerscale=2)
+    if show_parts:
+        axes[0, 2].legend(loc="best", fontsize=8, markerscale=2)
     fig.suptitle("UMAP of PI embeddings", y=0.995)
     fig.tight_layout()
-    plot_path = save_figure(fig, out_dir, "embedding_umap_person_domain.png", dpi=180)
+    plot_name = "embedding_umap_person_domain_part.png" if show_parts else "embedding_umap_person_domain.png"
+    plot_path = save_figure(fig, out_dir, plot_name, dpi=180)
     record = {
         "record_type": "comparison.umap",
         "created_at": utc_now(),

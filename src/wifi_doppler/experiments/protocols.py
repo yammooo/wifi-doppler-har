@@ -44,6 +44,13 @@ def parse_kshot_protocol(name: str) -> KShotProtocol:
             query_domains=SOURCE_DOMAINS,
         )
 
+    if name == "cross_domain_source_to_PI-4a":
+        return KShotProtocol(
+            name=name,
+            enrollment_domains=SOURCE_DOMAINS,
+            query_domains=TARGET_DOMAINS,
+        )
+
     prefix = "same_domain_"
     if name.startswith(prefix):
         domain = name.removeprefix(prefix)
@@ -52,12 +59,15 @@ def parse_kshot_protocol(name: str) -> KShotProtocol:
         return KShotProtocol(name=name, enrollment_domains=(domain,), query_domains=(domain,))
 
     raise ValueError(
-        f"Unknown protocol {name!r}. Use 'mixed_source' or 'same_domain_PI-1a'..."
+        f"Unknown protocol {name!r}. Use 'mixed_source', "
+        f"'cross_domain_source_to_PI-4a', or 'same_domain_PI-1a'..."
     )
 
 
 def default_protocol_names() -> list[str]:
-    return ["mixed_source"] + [f"same_domain_{domain}" for domain in ALL_DOMAINS]
+    return ["mixed_source", "cross_domain_source_to_PI-4a"] + [
+        f"same_domain_{domain}" for domain in ALL_DOMAINS
+    ]
 
 
 def protocol_dataset_metadata(
