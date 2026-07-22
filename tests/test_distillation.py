@@ -8,11 +8,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+import warnings
 
 import numpy as np
 import scipy.io as sio
 import torch
 import yaml
+
+from scripts.train_csi_to_doppler import configure_cuda_convolution_backend
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +90,49 @@ class TinyStudent(torch.nn.Module):
 
 
 class DistillationTests(unittest.TestCase):
+    def test_cudnn_version_mismatch_falls_back_to_native_cuda(self) -> None:
+        mismatch = RuntimeError("cudnn_status: CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH")
+        original_enabled = torch.backends.cudnn.enabled
+        torch.backends.cudnn.enabled = True
+        try:
+            with (
+                mock.patch("scripts.train_csi_to_doppler.torch.zeros", return_value=mock.sentinel.inputs),
+                mock.patch("scripts.train_csi_to_doppler.torch.ones", return_value=mock.sentinel.weights),
+                mock.patch(
+                    "scripts.train_csi_to_doppler.torch.nn.functional.conv1d",
+                    side_effect=(mismatch, mock.sentinel.output),
+                ) as conv1d,
+                mock.patch("scripts.train_csi_to_doppler.torch.cuda.synchronize") as synchronize,
+                warnings.catch_warnings(record=True) as caught,
+            ):
+                warnings.simplefilter("always")
+                enabled = configure_cuda_convolution_backend(torch.device("cuda"))
+
+            self.assertFalse(enabled)
+            self.assertFalse(torch.backends.cudnn.enabled)
+            self.assertEqual(conv1d.call_count, 2)
+            synchronize.assert_called_once_with(torch.device("cuda"))
+            self.assertIn("Mixed cuDNN sublibrary versions", str(caught[0].message))
+        finally:
+            torch.backends.cudnn.enabled = original_enabled
+
+    def test_unrelated_cudnn_error_is_not_hidden(self) -> None:
+        original_enabled = torch.backends.cudnn.enabled
+        torch.backends.cudnn.enabled = True
+        try:
+            with (
+                mock.patch("scripts.train_csi_to_doppler.torch.zeros", return_value=mock.sentinel.inputs),
+                mock.patch("scripts.train_csi_to_doppler.torch.ones", return_value=mock.sentinel.weights),
+                mock.patch(
+                    "scripts.train_csi_to_doppler.torch.nn.functional.conv1d",
+                    side_effect=RuntimeError("a different CUDA failure"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "different CUDA failure"):
+                    configure_cuda_convolution_backend(torch.device("cuda"))
+        finally:
+            torch.backends.cudnn.enabled = original_enabled
+
     def test_mse_and_metrics(self) -> None:
         predictions = torch.tensor([[[[0.0, -1.0, 2.0]], [[1.0, 3.0, 0.0]]]])
         targets = torch.tensor([[[[0.0, 1.0, 1.0]], [[1.0, 1.0, 0.0]]]])

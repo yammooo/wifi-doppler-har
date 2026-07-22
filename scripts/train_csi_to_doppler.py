@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import sys
 from typing import Any
+import warnings
 
 import numpy as np
 import torch
@@ -113,6 +114,33 @@ def select_device(requested: str) -> torch.device:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available.")
     return device
+
+
+def configure_cuda_convolution_backend(device: torch.device) -> bool:
+    """Probe cuDNN and fall back to PyTorch's native CUDA convolutions if needed."""
+    if device.type != "cuda" or not torch.backends.cudnn.enabled:
+        return False
+
+    inputs = torch.zeros((1, 1, 8), device=device)
+    weights = torch.ones((1, 1, 3), device=device)
+    try:
+        torch.nn.functional.conv1d(inputs, weights, padding=1)
+        torch.cuda.synchronize(device)
+    except RuntimeError as error:
+        if "CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH" not in str(error):
+            raise
+        torch.backends.cudnn.enabled = False
+        # Confirm that the fallback works now, before dataset construction and W&B setup.
+        torch.nn.functional.conv1d(inputs, weights, padding=1)
+        torch.cuda.synchronize(device)
+        warnings.warn(
+            "Mixed cuDNN sublibrary versions were detected. cuDNN has been disabled "
+            "for this process; training will continue with native CUDA convolutions.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return False
+    return True
 
 
 def make_grad_scaler(enabled: bool):
@@ -290,6 +318,7 @@ def main() -> None:
     seed = int(config["run"]["seed"])
     seed_everything(seed)
     device = select_device(str(config["device"]))
+    cudnn_enabled = configure_cuda_convolution_backend(device)
     amp_enabled = bool(config["training"]["amp"] and device.type == "cuda")
 
     resume_preview = None
@@ -313,7 +342,8 @@ def main() -> None:
     training_dir.mkdir(parents=True, exist_ok=True)
     save_yaml(training_dir / "resolved_config.yaml", config)
 
-    print(f"device: {device} (AMP: {amp_enabled})")
+    backend = f", cuDNN: {cudnn_enabled}" if device.type == "cuda" else ""
+    print(f"device: {device} (AMP: {amp_enabled}{backend})")
     print("building paired datasets...")
     datasets = build_datasets(config, ("train", "source_val", "target_val"))
     data_metadata = dataset_metadata(datasets)

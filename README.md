@@ -47,6 +47,12 @@ example, for CUDA 12.1:
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
+The training CLI probes cuDNN before loading the datasets. If Linux resolves
+incompatible system-wide and environment-provided cuDNN sublibraries, it emits
+a warning and keeps the run on the GPU using PyTorch's native CUDA convolution
+implementation. This fallback can be slower than a correctly isolated cuDNN
+installation.
+
 On Google Colab, PyTorch is usually already installed. In a notebook, run:
 
 ```python
