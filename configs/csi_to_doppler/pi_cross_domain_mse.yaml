@@ -6,8 +6,10 @@ run:
 device: auto
 
 data:
+  storage: memmap
   raw_root: data/CSI-80Mhz
   doppler_root: data/doppler_traces_pi
+  prepared_root: data/csi_doppler_memmap
   doppler_window_size: 340
   window_stride: 30
   split_guard: 31

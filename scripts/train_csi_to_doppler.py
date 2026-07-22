@@ -44,7 +44,9 @@ def load_resolved_config(config_path: Path, overrides: list[str], project_root: 
     for override in overrides:
         apply_override(config, override)
 
-    for key in ("raw_root", "doppler_root"):
+    for key in ("raw_root", "doppler_root", "prepared_root"):
+        if key not in config["data"]:
+            continue
         path = Path(config["data"][key])
         config["data"][key] = str((project_root / path).resolve() if not path.is_absolute() else path.resolve())
     output_root = Path(config["run"]["output_root"])
@@ -91,6 +93,10 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("training.validation_examples must be >= 0.")
     if config["training"].get("prefetch_batches", 0) < 0:
         raise ValueError("training.prefetch_batches must be >= 0.")
+    if config["data"].get("storage", "source") not in {"source", "memmap"}:
+        raise ValueError("data.storage must be source or memmap.")
+    if config["data"].get("storage") == "memmap" and not config["data"].get("prepared_root"):
+        raise ValueError("data.prepared_root is required when data.storage=memmap.")
     if config["wandb"]["mode"] not in {"online", "offline", "disabled"}:
         raise ValueError("wandb.mode must be online, offline, or disabled.")
     for split_name, split in config["data"]["splits"].items():
@@ -151,11 +157,10 @@ def make_grad_scaler(enabled: bool):
 
 def build_datasets(config: dict[str, Any], split_names: tuple[str, ...]):
     from wifi_doppler.data.csi_to_sharp_doppler_dataset import CsiToSharpDopplerDataset
+    from wifi_doppler.data.prepared_csi_doppler_dataset import PreparedCsiToSharpDopplerDataset
 
     data = config["data"]
     common = {
-        "raw_root": data["raw_root"],
-        "doppler_root": data["doppler_root"],
         "doppler_window_size": data["doppler_window_size"],
         "window_stride": data["window_stride"],
         "split_guard": data["split_guard"],
@@ -170,12 +175,19 @@ def build_datasets(config: dict[str, Any], split_names: tuple[str, ...]):
         "cache_raw": False,
         "cache_doppler": False,
     }
+    if data.get("storage", "source") == "memmap":
+        dataset_cls = PreparedCsiToSharpDopplerDataset
+        storage = {"prepared_root": data["prepared_root"]}
+    else:
+        dataset_cls = CsiToSharpDopplerDataset
+        storage = {"raw_root": data["raw_root"], "doppler_root": data["doppler_root"]}
     datasets = {}
     for name in split_names:
         split = data["splits"][name]
-        datasets[name] = CsiToSharpDopplerDataset(
+        datasets[name] = dataset_cls(
             scenarios=split["scenarios"],
             split=tuple(split["interval"]),
+            **storage,
             **common,
         )
         if len(datasets[name]) == 0:
@@ -296,6 +308,8 @@ def load_inference_state(path: Path, model: torch.nn.Module, device: torch.devic
 
 def normalized_resume_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(config)
+    normalized["data"].pop("storage", None)
+    normalized["data"].pop("prepared_root", None)
     for key in (
         "epochs",
         "log_every_steps",

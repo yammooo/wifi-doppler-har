@@ -298,12 +298,38 @@ class PairedDatasetTests(unittest.TestCase):
                 with (doppler_dir / f"PI1a_p03_stream_{antenna}.txt").open("wb") as stream:
                     pickle.dump(target, stream)
 
+            prepared_root = root / "prepared"
+            converted = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "convert_csi_doppler_memmap.py"),
+                    "--project-root",
+                    str(PROJECT_ROOT),
+                    "--raw-root",
+                    str(root / "raw"),
+                    "--doppler-root",
+                    str(root / "doppler"),
+                    "--output-root",
+                    str(prepared_root),
+                    "--scenarios",
+                    "PI-1a",
+                ],
+                cwd=PROJECT_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(converted.returncode, 0, msg=converted.stdout + converted.stderr)
+            self.assertTrue((prepared_root / "manifest.json").is_file())
+
             config = {
                 "run": {"id": "smoke", "output_root": str(root / "runs"), "seed": 0},
                 "device": "cpu",
                 "data": {
+                    "storage": "memmap",
                     "raw_root": str(root / "raw"),
                     "doppler_root": str(root / "doppler"),
+                    "prepared_root": str(prepared_root),
                     "doppler_window_size": 3,
                     "window_stride": 3,
                     "split_guard": 0,

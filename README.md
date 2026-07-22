@@ -79,7 +79,17 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 The CSI-to-Doppler student is trained from the command line rather than a
 notebook. The baseline configuration expects raw CSI in `data/CSI-80Mhz` and
-paired SHARP targets in `data/doppler_traces_pi`:
+paired SHARP targets in `data/doppler_traces_pi`. Convert those compressed
+source files once into the memory-mapped training format:
+
+```bash
+conda activate wifi-doppler-har
+python scripts/convert_csi_doppler_memmap.py
+```
+
+The converter preserves all 242 cleaned CSI subcarriers and direct float32
+Doppler targets under `data/csi_doppler_memmap`. Conversion is resumable: files
+already completed are skipped unless `--overwrite` is provided. Then train:
 
 ```bash
 conda activate wifi-doppler-har
