@@ -61,11 +61,10 @@ class ResidualTemporalBlock(torch.nn.Module):
         )
         self.bn2 = torch.nn.BatchNorm1d(channels)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        x = F.relu(self.bn1(self.conv1(x)), inplace=True)
-        x = self.bn2(self.conv2(x))
-        return F.relu(x + residual, inplace=True)
+    def forward(self, x):
+        h = self.conv1(F.relu(self.bn1(x), inplace=True))
+        h = self.conv2(F.relu(self.bn2(h), inplace=True))
+        return x + h
 
 
 class CsiToDopplerUNet1D(torch.nn.Module):

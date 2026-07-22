@@ -355,11 +355,13 @@ def raw_file_key(doppler_scenario: str, raw_stem: str) -> tuple[str, str, str] |
     return doppler_scenario, raw_stem[len(prefix) + 1 :], ""
 
 
-def _load_doppler_stream(path: Path, target_transform: str) -> np.ndarray:
+def _load_doppler_stream(path: Path, target_transform: str = "none") -> np.ndarray:
     with path.open("rb") as fp:
         arr = pickle.load(fp)
     if not isinstance(arr, np.ndarray) or arr.ndim != 2:
         raise ValueError(f"Expected 2D NumPy Doppler stream in {path}, got {type(arr)} {getattr(arr, 'shape', None)}")
+
+    # This is Sharp implementation, but for distillation leaks validation/test statistics and makes target at one time now depending on the whole recording
     if target_transform == "sharp_centered":
         arr = arr - arr.mean(axis=0, keepdims=True)
     elif target_transform != "none":
