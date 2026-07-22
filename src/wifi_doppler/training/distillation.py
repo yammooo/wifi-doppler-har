@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+import math
+from pathlib import Path
+import random
+import time
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+
+@dataclass(frozen=True)
+class DistillationBatch:
+    inputs: torch.Tensor
+    targets: torch.Tensor
+    filenames: tuple[str, ...]
+
+
+@dataclass
+class EpochResult:
+    metrics: dict[str, float]
+    num_batches: int
+    num_samples: int
+    global_step: int
+    examples: list[dict[str, Any]]
+
+
+def distillation_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    name: str = "mse",
+) -> torch.Tensor:
+    """Compute the configured student/teacher regression objective."""
+    if predictions.shape != targets.shape:
+        raise ValueError(
+            f"Prediction and target shapes differ: {tuple(predictions.shape)} != {tuple(targets.shape)}"
+        )
+    if name == "mse":
+        return F.mse_loss(predictions, targets)
+    raise ValueError(f"Unknown distillation loss: {name!r}")
+
+
+class DistillationMetricAccumulator:
+    """Accumulate regression metrics without retaining full predictions."""
+
+    def __init__(self, num_antennas: int):
+        self.num_antennas = num_antennas
+        self.sum_squared_error = 0.0
+        self.sum_absolute_error = 0.0
+        self.element_count = 0
+        self.per_antenna_squared_error = np.zeros(num_antennas, dtype=np.float64)
+        self.per_antenna_count = np.zeros(num_antennas, dtype=np.int64)
+        self.peak_bin_absolute_error = 0.0
+        self.peak_count = 0
+        self.negative_count = 0
+
+    def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None:
+        if predictions.shape != targets.shape:
+            raise ValueError(
+                f"Prediction and target shapes differ: {tuple(predictions.shape)} != {tuple(targets.shape)}"
+            )
+        if predictions.ndim != 4 or predictions.shape[1] != self.num_antennas:
+            raise ValueError(
+                "Expected predictions [batch, antenna, time, doppler_bin] with "
+                f"{self.num_antennas} antennas, got {tuple(predictions.shape)}"
+            )
+
+        error = predictions.detach() - targets.detach()
+        self.sum_squared_error += float(error.square().sum().item())
+        self.sum_absolute_error += float(error.abs().sum().item())
+        self.element_count += error.numel()
+
+        antenna_sse = error.square().sum(dim=(0, 2, 3)).cpu().double().numpy()
+        self.per_antenna_squared_error += antenna_sse
+        per_antenna_elements = predictions.shape[0] * predictions.shape[2] * predictions.shape[3]
+        self.per_antenna_count += per_antenna_elements
+
+        predicted_peaks = predictions.detach().argmax(dim=-1)
+        target_peaks = targets.detach().argmax(dim=-1)
+        self.peak_bin_absolute_error += float((predicted_peaks - target_peaks).abs().sum().item())
+        self.peak_count += predicted_peaks.numel()
+        self.negative_count += int((predictions.detach() < 0).sum().item())
+
+    def compute(self) -> dict[str, float]:
+        if self.element_count == 0:
+            raise ValueError("No samples were accumulated.")
+        mse = self.sum_squared_error / self.element_count
+        metrics = {
+            "mse": mse,
+            "mae": self.sum_absolute_error / self.element_count,
+            "rmse": math.sqrt(mse),
+            "peak_bin_mae": self.peak_bin_absolute_error / self.peak_count,
+            "negative_fraction": self.negative_count / self.element_count,
+        }
+        for antenna in range(self.num_antennas):
+            metrics[f"mse_antenna_{antenna}"] = (
+                self.per_antenna_squared_error[antenna] / self.per_antenna_count[antenna]
+            )
+        return metrics
+
+
+def count_recording_batches(dataset, batch_size: int) -> int:
+    """Return the number of per-recording batches emitted for one full pass."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    counts = np.zeros(len(dataset.traces), dtype=np.int64)
+    num_views = len(dataset.subcarrier_views)
+    for window in dataset.window_indexes:
+        counts[window.recording_idx] += num_views
+    return sum(math.ceil(int(count) / batch_size) for count in counts if count)
+
+
+def iter_recording_batches(
+    dataset,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    seed: int,
+) -> Iterator[DistillationBatch]:
+    """Yield all windows while loading each backing recording once.
+
+    Batches never cross recording boundaries. This bounds host memory to one
+    recording and avoids re-reading large MAT/pickle files for every window.
+    """
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+
+    by_recording: dict[int, list[tuple[int, int]]] = {}
+    for base_idx, window in enumerate(dataset.window_indexes):
+        items = by_recording.setdefault(window.recording_idx, [])
+        items.extend((base_idx, view_idx) for view_idx in range(len(dataset.subcarrier_views)))
+
+    rng = np.random.default_rng(seed)
+    recording_order = np.asarray(sorted(by_recording), dtype=np.int64)
+    if shuffle:
+        rng.shuffle(recording_order)
+
+    for recording_idx_value in recording_order:
+        recording_idx = int(recording_idx_value)
+        recording = dataset.traces[recording_idx]
+        items = list(by_recording[recording_idx])
+        if shuffle:
+            rng.shuffle(items)
+
+        raw = recording.load_raw()
+        doppler = recording.load_doppler()
+        try:
+            for offset in range(0, len(items), batch_size):
+                batch_items = items[offset : offset + batch_size]
+                inputs: list[np.ndarray] = []
+                targets: list[np.ndarray] = []
+                filenames: list[str] = []
+
+                for base_idx, view_idx in batch_items:
+                    window = dataset.window_indexes[base_idx]
+                    selected_subcarriers = dataset.subcarrier_views[view_idx]
+                    raw_start, raw_end = dataset.raw_bounds_for_doppler_window(window.start, window.end)
+
+                    x_complex = raw[:, selected_subcarriers, raw_start:raw_end]
+                    x = np.stack((x_complex.real, x_complex.imag), axis=-1).astype(np.float32, copy=False)
+                    y = doppler[:, window.start:window.end].astype(np.float32, copy=False)
+                    if not np.isfinite(x).all() or not np.isfinite(y).all():
+                        raise ValueError(
+                            f"Non-finite CSI/Doppler values in {recording.filename_stem} "
+                            f"at Doppler window [{window.start}, {window.end})"
+                        )
+
+                    inputs.append(x)
+                    targets.append(y)
+                    filenames.append(
+                        f"{recording.filename_stem}_d{window.start}-{window.end}_view{view_idx}"
+                    )
+
+                yield DistillationBatch(
+                    inputs=torch.from_numpy(np.ascontiguousarray(np.stack(inputs))),
+                    targets=torch.from_numpy(np.ascontiguousarray(np.stack(targets))),
+                    filenames=tuple(filenames),
+                )
+        finally:
+            recording.clear_cache()
+
+
+def run_distillation_epoch(
+    model: torch.nn.Module,
+    batches: Iterator[DistillationBatch],
+    *,
+    device: torch.device,
+    optimizer: torch.optim.Optimizer | None = None,
+    scaler: Any | None = None,
+    amp_enabled: bool = False,
+    loss_name: str = "mse",
+    global_step: int = 0,
+    max_examples: int = 0,
+    batch_callback: Callable[[int, dict[str, float]], None] | None = None,
+) -> EpochResult:
+    """Run one training or evaluation epoch over pre-batched recordings."""
+    training = optimizer is not None
+    model.train(training)
+    accumulator = DistillationMetricAccumulator(num_antennas=int(model.num_antennas))
+    examples: list[dict[str, Any]] = []
+    num_batches = 0
+    num_samples = 0
+    started_at = time.perf_counter()
+
+    grad_context = torch.enable_grad if training else torch.inference_mode
+    with grad_context():
+        for batch in batches:
+            inputs = batch.inputs.to(device, non_blocking=device.type == "cuda")
+            targets = batch.targets.to(device, non_blocking=device.type == "cuda")
+
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                predictions = model(inputs)
+                loss = distillation_loss(predictions, targets, name=loss_name)
+            if not torch.isfinite(loss):
+                raise FloatingPointError(
+                    f"Non-finite {loss_name} loss for batch beginning with {batch.filenames[0]}"
+                )
+
+            if training:
+                if scaler is not None and scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
+                global_step += 1
+
+            accumulator.update(predictions, targets)
+            if batch_callback is not None:
+                batch_callback(global_step, {"mse": float(loss.detach().item())})
+
+            remaining_examples = max_examples - len(examples)
+            if remaining_examples > 0:
+                for sample_idx in range(min(remaining_examples, predictions.shape[0])):
+                    examples.append(
+                        {
+                            "filename": batch.filenames[sample_idx],
+                            "prediction": predictions[sample_idx].detach().float().cpu(),
+                            "target": targets[sample_idx].detach().float().cpu(),
+                        }
+                    )
+
+            num_batches += 1
+            num_samples += inputs.shape[0]
+
+    elapsed = time.perf_counter() - started_at
+    metrics = accumulator.compute()
+    metrics["samples_per_second"] = num_samples / elapsed if elapsed > 0 else 0.0
+    metrics["elapsed_seconds"] = elapsed
+    return EpochResult(
+        metrics=metrics,
+        num_batches=num_batches,
+        num_samples=num_samples,
+        global_step=global_step,
+        examples=examples,
+    )
+
+
+def capture_rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def save_training_checkpoint(
+    path: str | Path,
+    *,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: Any | None,
+    epoch: int,
+    global_step: int,
+    best_metric: float,
+    patience_counter: int,
+    config: dict[str, Any],
+    history: list[dict[str, Any]],
+    wandb_run_id: str | None,
+) -> Path:
+    checkpoint = {
+        "checkpoint_type": "csi_to_doppler_training",
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+        "epoch": epoch,
+        "global_step": global_step,
+        "best_metric": best_metric,
+        "patience_counter": patience_counter,
+        "config": config,
+        "history": history,
+        "wandb_run_id": wandb_run_id,
+        "rng_state": capture_rng_state(),
+    }
+    return _atomic_torch_save(checkpoint, path)
+
+
+def load_training_checkpoint(
+    path: str | Path,
+    *,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: Any | None,
+    map_location: str | torch.device,
+) -> dict[str, Any]:
+    checkpoint = torch.load(Path(path), map_location=map_location, weights_only=False)
+    if checkpoint.get("checkpoint_type") != "csi_to_doppler_training":
+        raise ValueError(f"Not a CSI-to-Doppler training checkpoint: {path}")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scaler is not None and checkpoint.get("scaler_state_dict") is not None:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    restore_rng_state(checkpoint["rng_state"])
+    return checkpoint
+
+
+def save_inference_checkpoint(
+    path: str | Path,
+    *,
+    model: torch.nn.Module,
+    epoch: int,
+    metrics: dict[str, float],
+    config: dict[str, Any],
+) -> Path:
+    checkpoint = {
+        "checkpoint_type": "csi_to_doppler_inference",
+        "architecture": type(model).__name__,
+        "architecture_version": getattr(model, "architecture_version", None),
+        "model_state_dict": model.state_dict(),
+        "epoch": epoch,
+        "metrics": metrics,
+        "config": config,
+    }
+    return _atomic_torch_save(checkpoint, path)
+
+
+def _atomic_torch_save(value: dict[str, Any], path: str | Path) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    torch.save(value, temporary)
+    temporary.replace(target)
+    return target

@@ -32,6 +32,7 @@ input_files/
 outputs/
 results/
 checkpoints/
+/experiments/runs/
 *.h5
 *.pt
 *.pth

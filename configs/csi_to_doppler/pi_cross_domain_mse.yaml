@@ -1,0 +1,63 @@
+run:
+  id: null
+  output_root: experiments/runs
+  seed: 0
+
+device: auto
+
+data:
+  raw_root: data/CSI-80Mhz
+  doppler_root: data/doppler_traces_pi
+  doppler_window_size: 340
+  window_stride: 30
+  split_guard: 31
+  doppler_start: 800
+  doppler_sample_length: 31
+  doppler_sliding: 1
+  num_subcarriers: 30
+  subcarrier_sampling: fixed_uniform
+  num_subcarrier_views: 1
+  subcarrier_seed: 0
+  target_transform: none
+  splits:
+    train:
+      scenarios: [PI-1a, PI-2a, PI-3a]
+      interval: [0.0, 0.6]
+    source_val:
+      scenarios: [PI-1a, PI-2a, PI-3a]
+      interval: [0.6, 0.8]
+    target_val:
+      scenarios: [PI-4a]
+      interval: [0.6, 0.8]
+    target_test:
+      scenarios: [PI-4a]
+      interval: [0.8, 1.0]
+
+model:
+  num_antennas: 4
+  num_subcarriers: 30
+  input_parts: 2
+  output_doppler_bins: 100
+  output_time: 340
+  base_channels: 128
+  mid_channels: 192
+  bottleneck_channels: 256
+
+training:
+  loss: mse
+  batch_size: 8
+  learning_rate: 0.001
+  epochs: 100
+  amp: true
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.0
+  log_every_steps: 20
+  validation_examples: 2
+
+wandb:
+  mode: online
+  project: wifi-doppler-har
+  entity: yammo-unipd
+  name: null
+  watch: gradients
+  watch_log_frequency: 100

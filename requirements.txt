@@ -10,3 +10,5 @@ gdown
 pandas
 osqp
 umap-learn
+PyYAML
+wandb

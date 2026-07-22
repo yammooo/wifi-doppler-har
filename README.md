@@ -68,3 +68,36 @@ Training code should use automatic device selection by default:
 ```python
 device = "cuda" if torch.cuda.is_available() else "cpu"
 ```
+
+## CSI-to-Doppler Training
+
+The CSI-to-Doppler student is trained from the command line rather than a
+notebook. The baseline configuration expects raw CSI in `data/CSI-80Mhz` and
+paired SHARP targets in `data/doppler_traces_pi`:
+
+```bash
+conda activate wifi-doppler-har
+python scripts/train_csi_to_doppler.py \
+    --config configs/csi_to_doppler/pi_cross_domain_mse.yaml
+```
+
+Configuration values can be overridden without editing the YAML:
+
+```bash
+python scripts/train_csi_to_doppler.py \
+    --config configs/csi_to_doppler/pi_cross_domain_mse.yaml \
+    --set training.learning_rate=0.0005 \
+    --set wandb.mode=disabled
+```
+
+Resume an interrupted local run from its complete training checkpoint:
+
+```bash
+python scripts/train_csi_to_doppler.py \
+    --config configs/csi_to_doppler/pi_cross_domain_mse.yaml \
+    --resume experiments/runs/<run-id>/training/latest.pt
+```
+
+Each run stores the best inference checkpoint at `model.pt`, resumable state
+at `training/latest.pt`, and resolved configuration, pairing reports, metric
+history, and final test metrics under `experiments/runs/<run-id>`.
