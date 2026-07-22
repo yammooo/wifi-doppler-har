@@ -89,6 +89,8 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("training.log_every_steps must be >= 1.")
     if config["training"]["validation_examples"] < 0:
         raise ValueError("training.validation_examples must be >= 0.")
+    if config["training"].get("prefetch_batches", 0) < 0:
+        raise ValueError("training.prefetch_batches must be >= 0.")
     if config["wandb"]["mode"] not in {"online", "offline", "disabled"}:
         raise ValueError("wandb.mode must be online, offline, or disabled.")
     for split_name, split in config["data"]["splits"].items():
@@ -294,7 +296,17 @@ def load_inference_state(path: Path, model: torch.nn.Module, device: torch.devic
 
 def normalized_resume_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(config)
-    normalized["training"].pop("epochs", None)
+    for key in (
+        "epochs",
+        "log_every_steps",
+        "validation_examples",
+        "prefetch_batches",
+        "pin_memory",
+        "cuda_prefetch",
+        "cudnn_benchmark",
+        "allow_tf32",
+    ):
+        normalized["training"].pop(key, None)
     normalized.pop("wandb", None)
     normalized["run"].pop("id", None)
     return normalized
@@ -309,6 +321,8 @@ def main() -> None:
     from wifi_doppler.training.distillation import (
         iter_recording_batches,
         load_training_checkpoint,
+        move_batches_to_device,
+        prefetch_batches,
         run_distillation_epoch,
         save_inference_checkpoint,
         save_training_checkpoint,
@@ -320,6 +334,14 @@ def main() -> None:
     device = select_device(str(config["device"]))
     cudnn_enabled = configure_cuda_convolution_backend(device)
     amp_enabled = bool(config["training"]["amp"] and device.type == "cuda")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = bool(
+            cudnn_enabled and config["training"].get("cudnn_benchmark", True)
+        )
+        allow_tf32 = bool(config["training"].get("allow_tf32", True))
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+        torch.set_float32_matmul_precision("high" if allow_tf32 else "highest")
 
     resume_preview = None
     resume_path = args.resume.resolve() if args.resume else None
@@ -327,8 +349,8 @@ def main() -> None:
         resume_preview = torch.load(resume_path, map_location="cpu", weights_only=False)
         if normalized_resume_config(config) != normalized_resume_config(resume_preview["config"]):
             raise ValueError(
-                "The resume configuration differs from the checkpoint. Only training.epochs, "
-                "W&B settings, and run.id may change."
+                "The resume configuration differs from the checkpoint. Only runtime performance/logging "
+                "settings, training.epochs, W&B settings, and run.id may change."
             )
         run_id = str(resume_preview["config"]["run"]["id"])
     else:
@@ -380,11 +402,12 @@ def main() -> None:
     if wandb_run is not None:
         wandb_run.define_metric("global_step")
         wandb_run.define_metric("*", step_metric="global_step")
-        wandb_run.watch(
-            model,
-            log=config["wandb"]["watch"],
-            log_freq=int(config["wandb"]["watch_log_frequency"]),
-        )
+        if config["wandb"]["watch"]:
+            wandb_run.watch(
+                model,
+                log=config["wandb"]["watch"],
+                log_freq=int(config["wandb"]["watch_log_frequency"]),
+            )
         wandb_run.summary["model/trainable_parameters"] = count_trainable_parameters(model)
         wandb_run.config.update({"dataset_metadata": data_metadata}, allow_val_change=True)
         for split_name, metadata in data_metadata.items():
@@ -411,6 +434,24 @@ def main() -> None:
     latest_path = training_dir / "latest.pt"
     best_path = run_dir / "model.pt"
 
+    def batches_for(split_name: str, *, shuffle: bool, batch_seed: int):
+        host_batches = iter_recording_batches(
+            datasets[split_name],
+            batch_size=batch_size,
+            shuffle=shuffle,
+            seed=batch_seed,
+        )
+        host_batches = prefetch_batches(
+            host_batches,
+            max_prefetch=int(config["training"].get("prefetch_batches", 0)),
+            pin_memory=bool(config["training"].get("pin_memory", True) and device.type == "cuda"),
+        )
+        return move_batches_to_device(
+            host_batches,
+            device=device,
+            cuda_prefetch=bool(config["training"].get("cuda_prefetch", True)),
+        )
+
     try:
         for epoch in range(start_epoch, int(config["training"]["epochs"]) + 1):
             if device.type == "cuda":
@@ -422,7 +463,7 @@ def main() -> None:
 
             train_result = run_distillation_epoch(
                 model,
-                iter_recording_batches(datasets["train"], batch_size=batch_size, shuffle=True, seed=seed + epoch),
+                batches_for("train", shuffle=True, batch_seed=seed + epoch),
                 device=device,
                 optimizer=optimizer,
                 scaler=scaler,
@@ -430,6 +471,7 @@ def main() -> None:
                 loss_name=config["training"]["loss"],
                 global_step=global_step,
                 batch_callback=log_batch if wandb_run is not None else None,
+                batch_callback_every=log_every,
             )
             global_step = train_result.global_step
 
@@ -437,9 +479,7 @@ def main() -> None:
             for split_name in ("source_val", "target_val"):
                 evaluations[split_name] = run_distillation_epoch(
                     model,
-                    iter_recording_batches(
-                        datasets[split_name], batch_size=batch_size, shuffle=False, seed=seed
-                    ),
+                    batches_for(split_name, shuffle=False, batch_seed=seed),
                     device=device,
                     amp_enabled=amp_enabled,
                     loss_name=config["training"]["loss"],
@@ -542,7 +582,7 @@ def main() -> None:
             wandb_run.config.update({"dataset_metadata": data_metadata}, allow_val_change=True)
         test_result = run_distillation_epoch(
             model,
-            iter_recording_batches(datasets["target_test"], batch_size=batch_size, shuffle=False, seed=seed),
+            batches_for("target_test", shuffle=False, batch_seed=seed),
             device=device,
             amp_enabled=amp_enabled,
             loss_name=config["training"]["loss"],

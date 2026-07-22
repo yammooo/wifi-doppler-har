@@ -53,11 +53,16 @@ training:
   early_stopping_min_delta: 0.0
   log_every_steps: 20
   validation_examples: 2
+  prefetch_batches: 2
+  pin_memory: true
+  cuda_prefetch: true
+  cudnn_benchmark: true
+  allow_tf32: true
 
 wandb:
   mode: online
   project: wifi-doppler-har
   entity: yammo-unipd
   name: null
-  watch: gradients
+  watch: null
   watch_log_frequency: 100

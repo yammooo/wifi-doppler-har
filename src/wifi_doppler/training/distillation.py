@@ -4,7 +4,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import queue
 import random
+import threading
 import time
 from typing import Any
 
@@ -50,14 +52,10 @@ class DistillationMetricAccumulator:
 
     def __init__(self, num_antennas: int):
         self.num_antennas = num_antennas
-        self.sum_squared_error = 0.0
-        self.sum_absolute_error = 0.0
+        self._stats: torch.Tensor | None = None
         self.element_count = 0
-        self.per_antenna_squared_error = np.zeros(num_antennas, dtype=np.float64)
         self.per_antenna_count = np.zeros(num_antennas, dtype=np.int64)
-        self.peak_bin_absolute_error = 0.0
         self.peak_count = 0
-        self.negative_count = 0
 
     def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None:
         if predictions.shape != targets.shape:
@@ -71,36 +69,47 @@ class DistillationMetricAccumulator:
             )
 
         error = predictions.detach() - targets.detach()
-        self.sum_squared_error += float(error.square().sum().item())
-        self.sum_absolute_error += float(error.abs().sum().item())
-        self.element_count += error.numel()
-
-        antenna_sse = error.square().sum(dim=(0, 2, 3)).cpu().double().numpy()
-        self.per_antenna_squared_error += antenna_sse
-        per_antenna_elements = predictions.shape[0] * predictions.shape[2] * predictions.shape[3]
-        self.per_antenna_count += per_antenna_elements
-
+        squared_error = error.square()
+        per_antenna_sse = squared_error.sum(dim=(0, 2, 3))
         predicted_peaks = predictions.detach().argmax(dim=-1)
         target_peaks = targets.detach().argmax(dim=-1)
-        self.peak_bin_absolute_error += float((predicted_peaks - target_peaks).abs().sum().item())
+        batch_stats = torch.cat(
+            (
+                per_antenna_sse.sum().reshape(1),
+                error.abs().sum().reshape(1),
+                per_antenna_sse,
+                (predicted_peaks - target_peaks).abs().sum().reshape(1),
+                (predictions.detach() < 0).sum().reshape(1),
+            )
+        ).double()
+        if self._stats is None:
+            self._stats = torch.zeros_like(batch_stats)
+        self._stats.add_(batch_stats)
+
+        self.element_count += error.numel()
+        per_antenna_elements = predictions.shape[0] * predictions.shape[2] * predictions.shape[3]
+        self.per_antenna_count += per_antenna_elements
         self.peak_count += predicted_peaks.numel()
-        self.negative_count += int((predictions.detach() < 0).sum().item())
 
     def compute(self) -> dict[str, float]:
-        if self.element_count == 0:
+        if self.element_count == 0 or self._stats is None:
             raise ValueError("No samples were accumulated.")
-        mse = self.sum_squared_error / self.element_count
+        stats = self._stats.cpu().numpy()
+        total_sse = float(stats[0])
+        total_absolute_error = float(stats[1])
+        per_antenna_sse = stats[2 : 2 + self.num_antennas]
+        peak_absolute_error = float(stats[-2])
+        negative_count = float(stats[-1])
+        mse = total_sse / self.element_count
         metrics = {
             "mse": mse,
-            "mae": self.sum_absolute_error / self.element_count,
+            "mae": total_absolute_error / self.element_count,
             "rmse": math.sqrt(mse),
-            "peak_bin_mae": self.peak_bin_absolute_error / self.peak_count,
-            "negative_fraction": self.negative_count / self.element_count,
+            "peak_bin_mae": peak_absolute_error / self.peak_count,
+            "negative_fraction": negative_count / self.element_count,
         }
         for antenna in range(self.num_antennas):
-            metrics[f"mse_antenna_{antenna}"] = (
-                self.per_antenna_squared_error[antenna] / self.per_antenna_count[antenna]
-            )
+            metrics[f"mse_antenna_{antenna}"] = per_antenna_sse[antenna] / self.per_antenna_count[antenna]
         return metrics
 
 
@@ -185,6 +194,115 @@ def iter_recording_batches(
             recording.clear_cache()
 
 
+@dataclass(frozen=True)
+class _ProducerFailure:
+    error: BaseException
+
+
+_PREFETCH_END = object()
+
+
+def prefetch_batches(
+    batches: Iterator[DistillationBatch],
+    *,
+    max_prefetch: int,
+    pin_memory: bool,
+) -> Iterator[DistillationBatch]:
+    """Prepare a bounded number of host batches on a background thread."""
+    if max_prefetch <= 0:
+        yield from batches
+        return
+
+    pending: queue.Queue[DistillationBatch | _ProducerFailure | object] = queue.Queue(max_prefetch)
+    stopped = threading.Event()
+
+    def put(item: DistillationBatch | _ProducerFailure | object) -> bool:
+        while not stopped.is_set():
+            try:
+                pending.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def produce() -> None:
+        try:
+            for batch in batches:
+                if pin_memory:
+                    batch = DistillationBatch(
+                        inputs=batch.inputs.pin_memory(),
+                        targets=batch.targets.pin_memory(),
+                        filenames=batch.filenames,
+                    )
+                if not put(batch):
+                    return
+        except BaseException as exc:
+            put(_ProducerFailure(exc))
+        finally:
+            put(_PREFETCH_END)
+
+    producer = threading.Thread(target=produce, name="csi-doppler-prefetch", daemon=True)
+    producer.start()
+    try:
+        while True:
+            item = pending.get()
+            if item is _PREFETCH_END:
+                break
+            if isinstance(item, _ProducerFailure):
+                raise RuntimeError("Background batch preparation failed") from item.error
+            if not isinstance(item, DistillationBatch):
+                raise TypeError(f"Unexpected prefetch item: {type(item).__name__}")
+            yield item
+    finally:
+        stopped.set()
+
+
+def move_batches_to_device(
+    batches: Iterator[DistillationBatch],
+    *,
+    device: torch.device,
+    cuda_prefetch: bool,
+) -> Iterator[DistillationBatch]:
+    """Move batches to the device, optionally one batch ahead on a CUDA stream."""
+    if device.type != "cuda" or not cuda_prefetch:
+        for batch in batches:
+            yield DistillationBatch(
+                inputs=batch.inputs.to(device, non_blocking=device.type == "cuda"),
+                targets=batch.targets.to(device, non_blocking=device.type == "cuda"),
+                filenames=batch.filenames,
+            )
+        return
+
+    iterator = iter(batches)
+    transfer_stream = torch.cuda.Stream(device=device)
+
+    def transfer(batch: DistillationBatch) -> DistillationBatch:
+        with torch.cuda.stream(transfer_stream):
+            return DistillationBatch(
+                inputs=batch.inputs.to(device, non_blocking=True),
+                targets=batch.targets.to(device, non_blocking=True),
+                filenames=batch.filenames,
+            )
+
+    try:
+        next_batch = transfer(next(iterator))
+    except StopIteration:
+        return
+
+    while True:
+        current_stream = torch.cuda.current_stream(device)
+        current_stream.wait_stream(transfer_stream)
+        current_batch = next_batch
+        current_batch.inputs.record_stream(current_stream)
+        current_batch.targets.record_stream(current_stream)
+        try:
+            next_batch = transfer(next(iterator))
+        except StopIteration:
+            yield current_batch
+            break
+        yield current_batch
+
+
 def run_distillation_epoch(
     model: torch.nn.Module,
     batches: Iterator[DistillationBatch],
@@ -197,8 +315,11 @@ def run_distillation_epoch(
     global_step: int = 0,
     max_examples: int = 0,
     batch_callback: Callable[[int, dict[str, float]], None] | None = None,
+    batch_callback_every: int = 1,
 ) -> EpochResult:
     """Run one training or evaluation epoch over pre-batched recordings."""
+    if batch_callback_every < 1:
+        raise ValueError("batch_callback_every must be >= 1")
     training = optimizer is not None
     model.train(training)
     accumulator = DistillationMetricAccumulator(num_antennas=int(model.num_antennas))
@@ -210,8 +331,11 @@ def run_distillation_epoch(
     grad_context = torch.enable_grad if training else torch.inference_mode
     with grad_context():
         for batch in batches:
-            inputs = batch.inputs.to(device, non_blocking=device.type == "cuda")
-            targets = batch.targets.to(device, non_blocking=device.type == "cuda")
+            inputs = batch.inputs
+            targets = batch.targets
+            if inputs.device != device or targets.device != device:
+                inputs = inputs.to(device, non_blocking=device.type == "cuda")
+                targets = targets.to(device, non_blocking=device.type == "cuda")
 
             if training:
                 optimizer.zero_grad(set_to_none=True)
@@ -234,7 +358,7 @@ def run_distillation_epoch(
                 global_step += 1
 
             accumulator.update(predictions, targets)
-            if batch_callback is not None:
+            if batch_callback is not None and global_step % batch_callback_every == 0:
                 batch_callback(global_step, {"mse": float(loss.detach().item())})
 
             remaining_examples = max_examples - len(examples)

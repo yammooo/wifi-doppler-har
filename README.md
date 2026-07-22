@@ -107,3 +107,10 @@ python scripts/train_csi_to_doppler.py \
 Each run stores the best inference checkpoint at `model.pt`, resumable state
 at `training/latest.pt`, and resolved configuration, pairing reports, metric
 history, and final test metrics under `experiments/runs/<run-id>`.
+
+The default trainer overlaps recording I/O and batch construction with GPU
+work using a bounded prefetch thread, pinned host memory, and a CUDA transfer
+stream. `training.prefetch_batches` controls the host-memory/performance
+tradeoff. Keep W&B `watch` disabled for normal runs; gradient histogram
+collection forces periodic GPU-to-CPU transfers and is intended for short
+diagnostic runs only.

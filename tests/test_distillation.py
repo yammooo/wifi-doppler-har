@@ -32,6 +32,8 @@ from wifi_doppler.training.distillation import (
     distillation_loss,
     iter_recording_batches,
     load_training_checkpoint,
+    move_batches_to_device,
+    prefetch_batches,
     run_distillation_epoch,
     save_training_checkpoint,
 )
@@ -177,17 +179,24 @@ class DistillationTests(unittest.TestCase):
         model = TinyStudent()
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         before = model.scale.detach().clone()
+        batches = iter_recording_batches(dataset, batch_size=2, shuffle=True, seed=0)
+        batches = prefetch_batches(batches, max_prefetch=2, pin_memory=False)
+        batches = move_batches_to_device(batches, device=torch.device("cpu"), cuda_prefetch=False)
+        callback_steps = []
         result = run_distillation_epoch(
             model,
-            iter_recording_batches(dataset, batch_size=2, shuffle=True, seed=0),
+            batches,
             device=torch.device("cpu"),
             optimizer=optimizer,
             amp_enabled=False,
+            batch_callback=lambda step, metrics: callback_steps.append((step, metrics)),
+            batch_callback_every=2,
         )
         self.assertEqual(result.num_samples, len(dataset))
         self.assertEqual(result.global_step, 2)
         self.assertNotEqual(float(before), float(model.scale.detach()))
         self.assertIn("mse", result.metrics)
+        self.assertEqual([step for step, _ in callback_steps], [2])
 
     def test_checkpoint_restores_training_and_rng_state(self) -> None:
         model = TinyStudent()
