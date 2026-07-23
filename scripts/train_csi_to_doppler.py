@@ -4,11 +4,14 @@ import argparse
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import random
 import sys
 from typing import Any
 import warnings
+
+os.environ["MPLBACKEND"] = "Agg"
 
 import numpy as np
 import torch
