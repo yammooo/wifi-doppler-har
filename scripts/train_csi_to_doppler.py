@@ -106,8 +106,11 @@ def validate_config(config: dict[str, Any]) -> None:
     if config["model"]["output_time"] != config["data"]["doppler_window_size"]:
         raise ValueError("model.output_time must match data.doppler_window_size.")
     architecture = config["model"].get("architecture", "unet1d_legacy")
-    if architecture not in {"unet1d_legacy", "unet2d_decoder"}:
-        raise ValueError("model.architecture must be unet1d_legacy or unet2d_decoder.")
+    if architecture not in {"unet1d_legacy", "unet1d_spatial_head", "unet2d_decoder"}:
+        raise ValueError(
+            "model.architecture must be unet1d_legacy, unet1d_spatial_head, "
+            "or unet2d_decoder."
+        )
     if architecture == "unet2d_decoder":
         decoder_channels = config["model"].get("decoder_channels")
         coarse_bins = config["model"].get("decoder_coarse_bins")
@@ -124,6 +127,23 @@ def validate_config(config: dict[str, Any]) -> None:
         ):
             raise ValueError(
                 "model.decoder_coarse_bins must be an integer between 1 and output_doppler_bins."
+            )
+    if architecture == "unet1d_spatial_head":
+        head_channels = config["model"].get("head_channels")
+        coarse_bins = config["model"].get("head_coarse_bins")
+        if (
+            not isinstance(head_channels, int)
+            or isinstance(head_channels, bool)
+            or head_channels < 1
+        ):
+            raise ValueError("model.head_channels must be an integer >= 1.")
+        if (
+            not isinstance(coarse_bins, int)
+            or isinstance(coarse_bins, bool)
+            or not 1 <= coarse_bins <= config["model"]["output_doppler_bins"]
+        ):
+            raise ValueError(
+                "model.head_coarse_bins must be an integer between 1 and output_doppler_bins."
             )
     if config["training"]["batch_size"] < 1 or config["training"]["epochs"] < 1:
         raise ValueError("training.batch_size and training.epochs must be >= 1.")

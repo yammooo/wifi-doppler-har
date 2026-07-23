@@ -28,6 +28,7 @@ from wifi_doppler.data.csi_to_sharp_doppler_dataset import CsiToSharpDopplerData
 from wifi_doppler.data.windowing import WindowIndex
 from wifi_doppler.models.csi_to_doppler import CsiToDopplerUNet1D
 from wifi_doppler.models.csi_to_doppler_2d import CsiToDopplerUNet2DDecoder
+from wifi_doppler.models.csi_to_doppler_2d_head import CsiToDopplerUNet1DSpatialHead
 from wifi_doppler.models.csi_to_doppler_builders import build_csi_to_doppler_model
 from wifi_doppler.training.distillation import (
     DistillationMetricAccumulator,
@@ -332,7 +333,7 @@ class DistillationTests(unittest.TestCase):
 
 
 class CsiToDopplerModelTests(unittest.TestCase):
-    def test_full_2d_decoder_output_shape_and_legacy_builder(self) -> None:
+    def test_spatial_head_output_shape_and_model_builders(self) -> None:
         common = {
             "num_antennas": 4,
             "num_subcarriers": 3,
@@ -343,6 +344,14 @@ class CsiToDopplerModelTests(unittest.TestCase):
             "mid_channels": 6,
             "bottleneck_channels": 8,
         }
+        spatial_head = build_csi_to_doppler_model(
+            {
+                "architecture": "unet1d_spatial_head",
+                **common,
+                "head_channels": 3,
+                "head_coarse_bins": 3,
+            }
+        ).eval()
         model = build_csi_to_doppler_model(
             {
                 "architecture": "unet2d_decoder",
@@ -353,14 +362,25 @@ class CsiToDopplerModelTests(unittest.TestCase):
         ).eval()
 
         with torch.no_grad():
+            spatial_output = spatial_head(torch.randn(2, 4, 3, 7, 2))
             output = model(torch.randn(2, 4, 3, 7, 2))
 
+        self.assertIsInstance(spatial_head, CsiToDopplerUNet1DSpatialHead)
+        self.assertIsInstance(spatial_head, CsiToDopplerUNet1D)
+        self.assertEqual(tuple(spatial_output.shape), (2, 4, 5, 12))
+        legacy_keys = {
+            key for key in build_csi_to_doppler_model(common).state_dict() if not key.startswith("output_head.")
+        }
+        spatial_keys = {
+            key for key in spatial_head.state_dict() if not key.startswith("output_head.")
+        }
+        self.assertEqual(spatial_keys, legacy_keys)
         self.assertIsInstance(model, CsiToDopplerUNet2DDecoder)
         self.assertEqual(tuple(output.shape), (2, 4, 5, 12))
         self.assertTrue(any(isinstance(module, torch.nn.Conv2d) for module in model.decoder1.modules()))
         self.assertIsInstance(build_csi_to_doppler_model(common), CsiToDopplerUNet1D)
 
-    def test_full_2d_decoder_config_validation(self) -> None:
+    def test_spatial_model_config_validation(self) -> None:
         config = yaml.safe_load(
             (PROJECT_ROOT / "configs" / "csi_to_doppler" / "pi_cross_domain_mse.yaml").read_text(
                 encoding="utf-8"
@@ -371,12 +391,18 @@ class CsiToDopplerModelTests(unittest.TestCase):
             validate_config(config)
 
         config["model"]["architecture"] = "unet2d_decoder"
+        config["model"]["decoder_channels"] = 16
         config["model"]["decoder_coarse_bins"] = config["model"]["output_doppler_bins"] + 1
         with self.assertRaisesRegex(ValueError, "decoder_coarse_bins"):
             validate_config(config)
         config["model"]["decoder_coarse_bins"] = 25
         config["model"]["decoder_channels"] = 1.5
         with self.assertRaisesRegex(ValueError, "decoder_channels"):
+            validate_config(config)
+
+        config["model"]["architecture"] = "unet1d_spatial_head"
+        config["model"]["head_coarse_bins"] = config["model"]["output_doppler_bins"] + 1
+        with self.assertRaisesRegex(ValueError, "head_coarse_bins"):
             validate_config(config)
 
 
@@ -492,7 +518,7 @@ class PairedDatasetTests(unittest.TestCase):
                     },
                 },
                 "model": {
-                    "architecture": "unet2d_decoder",
+                    "architecture": "unet1d_spatial_head",
                     "num_antennas": 4,
                     "num_subcarriers": 3,
                     "input_parts": 2,
@@ -501,8 +527,8 @@ class PairedDatasetTests(unittest.TestCase):
                     "base_channels": 4,
                     "mid_channels": 6,
                     "bottleneck_channels": 8,
-                    "decoder_channels": 2,
-                    "decoder_coarse_bins": 25,
+                    "head_channels": 2,
+                    "head_coarse_bins": 25,
                 },
                 "training": {
                     "loss": "motion_weighted_wasserstein",
@@ -557,10 +583,10 @@ class PairedDatasetTests(unittest.TestCase):
             self.assertTrue((run_dir / "training" / "final_test.json").exists())
             run_record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(run_record["status"], "completed")
-            self.assertEqual(run_record["model_key"], "csi_to_doppler_unet2d_decoder_v1")
+            self.assertEqual(run_record["model_key"], "csi_to_doppler_unet1d_spatial_head_v1")
             self.assertEqual(
                 run_record["builder"],
-                "wifi_doppler.models.csi_to_doppler_2d.CsiToDopplerUNet2DDecoder",
+                "wifi_doppler.models.csi_to_doppler_2d_head.CsiToDopplerUNet1DSpatialHead",
             )
 
             config["training"]["epochs"] = 2

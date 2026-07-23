@@ -36,7 +36,7 @@ data:
       interval: [0.8, 1.0]
 
 model:
-  architecture: unet2d_decoder
+  architecture: unet1d_spatial_head
   num_antennas: 4
   num_subcarriers: 30
   input_parts: 2
@@ -45,8 +45,8 @@ model:
   base_channels: 128
   mid_channels: 192
   bottleneck_channels: 256
-  decoder_channels: 16
-  decoder_coarse_bins: 25
+  head_channels: 8
+  head_coarse_bins: 25
 
 training:
   loss: motion_weighted_wasserstein
