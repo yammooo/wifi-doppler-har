@@ -26,6 +26,9 @@ if str(SRC_DIR) not in sys.path:
 
 from wifi_doppler.data.csi_to_sharp_doppler_dataset import CsiToSharpDopplerDataset
 from wifi_doppler.data.windowing import WindowIndex
+from wifi_doppler.models.csi_to_doppler import CsiToDopplerUNet1D
+from wifi_doppler.models.csi_to_doppler_2d import CsiToDopplerUNet2DDecoder
+from wifi_doppler.models.csi_to_doppler_builders import build_csi_to_doppler_model
 from wifi_doppler.training.distillation import (
     DistillationMetricAccumulator,
     count_recording_batches,
@@ -328,6 +331,55 @@ class DistillationTests(unittest.TestCase):
             self.assertEqual(float(torch.rand(())), expected_torch)
 
 
+class CsiToDopplerModelTests(unittest.TestCase):
+    def test_full_2d_decoder_output_shape_and_legacy_builder(self) -> None:
+        common = {
+            "num_antennas": 4,
+            "num_subcarriers": 3,
+            "input_parts": 2,
+            "output_doppler_bins": 12,
+            "output_time": 5,
+            "base_channels": 4,
+            "mid_channels": 6,
+            "bottleneck_channels": 8,
+        }
+        model = build_csi_to_doppler_model(
+            {
+                "architecture": "unet2d_decoder",
+                **common,
+                "decoder_channels": 3,
+                "decoder_coarse_bins": 3,
+            }
+        ).eval()
+
+        with torch.no_grad():
+            output = model(torch.randn(2, 4, 3, 7, 2))
+
+        self.assertIsInstance(model, CsiToDopplerUNet2DDecoder)
+        self.assertEqual(tuple(output.shape), (2, 4, 5, 12))
+        self.assertTrue(any(isinstance(module, torch.nn.Conv2d) for module in model.decoder1.modules()))
+        self.assertIsInstance(build_csi_to_doppler_model(common), CsiToDopplerUNet1D)
+
+    def test_full_2d_decoder_config_validation(self) -> None:
+        config = yaml.safe_load(
+            (PROJECT_ROOT / "configs" / "csi_to_doppler" / "pi_cross_domain_mse.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        config["model"]["architecture"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "model.architecture"):
+            validate_config(config)
+
+        config["model"]["architecture"] = "unet2d_decoder"
+        config["model"]["decoder_coarse_bins"] = config["model"]["output_doppler_bins"] + 1
+        with self.assertRaisesRegex(ValueError, "decoder_coarse_bins"):
+            validate_config(config)
+        config["model"]["decoder_coarse_bins"] = 25
+        config["model"]["decoder_channels"] = 1.5
+        with self.assertRaisesRegex(ValueError, "decoder_channels"):
+            validate_config(config)
+
+
 class PairedDatasetTests(unittest.TestCase):
     def test_mat_pickle_pairing_alignment_and_direct_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -440,6 +492,7 @@ class PairedDatasetTests(unittest.TestCase):
                     },
                 },
                 "model": {
+                    "architecture": "unet2d_decoder",
                     "num_antennas": 4,
                     "num_subcarriers": 3,
                     "input_parts": 2,
@@ -448,6 +501,8 @@ class PairedDatasetTests(unittest.TestCase):
                     "base_channels": 4,
                     "mid_channels": 6,
                     "bottleneck_channels": 8,
+                    "decoder_channels": 2,
+                    "decoder_coarse_bins": 25,
                 },
                 "training": {
                     "loss": "motion_weighted_wasserstein",
@@ -502,6 +557,11 @@ class PairedDatasetTests(unittest.TestCase):
             self.assertTrue((run_dir / "training" / "final_test.json").exists())
             run_record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(run_record["status"], "completed")
+            self.assertEqual(run_record["model_key"], "csi_to_doppler_unet2d_decoder_v1")
+            self.assertEqual(
+                run_record["builder"],
+                "wifi_doppler.models.csi_to_doppler_2d.CsiToDopplerUNet2DDecoder",
+            )
 
             config["training"]["epochs"] = 2
             config_path.write_text(yaml.safe_dump(config), encoding="utf-8")

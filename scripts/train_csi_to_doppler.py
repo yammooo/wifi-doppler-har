@@ -105,6 +105,26 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("model.num_subcarriers must match data.num_subcarriers.")
     if config["model"]["output_time"] != config["data"]["doppler_window_size"]:
         raise ValueError("model.output_time must match data.doppler_window_size.")
+    architecture = config["model"].get("architecture", "unet1d_legacy")
+    if architecture not in {"unet1d_legacy", "unet2d_decoder"}:
+        raise ValueError("model.architecture must be unet1d_legacy or unet2d_decoder.")
+    if architecture == "unet2d_decoder":
+        decoder_channels = config["model"].get("decoder_channels")
+        coarse_bins = config["model"].get("decoder_coarse_bins")
+        if (
+            not isinstance(decoder_channels, int)
+            or isinstance(decoder_channels, bool)
+            or decoder_channels < 1
+        ):
+            raise ValueError("model.decoder_channels must be an integer >= 1.")
+        if (
+            not isinstance(coarse_bins, int)
+            or isinstance(coarse_bins, bool)
+            or not 1 <= coarse_bins <= config["model"]["output_doppler_bins"]
+        ):
+            raise ValueError(
+                "model.decoder_coarse_bins must be an integer between 1 and output_doppler_bins."
+            )
     if config["training"]["batch_size"] < 1 or config["training"]["epochs"] < 1:
         raise ValueError("training.batch_size and training.epochs must be >= 1.")
     recordings_per_batch = config["training"].get("recordings_per_batch", 1)
@@ -362,7 +382,11 @@ def main() -> None:
     project_root = args.project_root.resolve()
     add_src_to_path(project_root)
 
-    from wifi_doppler.models.csi_to_doppler import CsiToDopplerUNet1D, count_trainable_parameters
+    from wifi_doppler.models.csi_to_doppler import count_trainable_parameters
+    from wifi_doppler.models.csi_to_doppler_builders import (
+        build_csi_to_doppler_model,
+        csi_to_doppler_model_metadata,
+    )
     from wifi_doppler.training.distillation import (
         iter_recording_batches,
         load_training_checkpoint,
@@ -418,7 +442,8 @@ def main() -> None:
     for name, metadata in data_metadata.items():
         print(f"{name}: {metadata['recordings']} recordings, {metadata['windows']} windows")
 
-    model = CsiToDopplerUNet1D(**config["model"]).to(device)
+    model = build_csi_to_doppler_model(config["model"]).to(device)
+    model_key, model_builder = csi_to_doppler_model_metadata(config["model"])
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["training"]["learning_rate"]))
     scaler = make_grad_scaler(amp_enabled)
     start_epoch = 1
@@ -460,9 +485,9 @@ def main() -> None:
 
     run_record = {
         "model_run_id": run_id,
-        "model_key": "csi_to_doppler_unet1d_v1",
+        "model_key": model_key,
         "representation": "raw_csi_to_sharp_doppler",
-        "builder": "wifi_doppler.models.csi_to_doppler.CsiToDopplerUNet1D",
+        "builder": model_builder,
         "training_objective": config["training"]["loss"],
         "device": str(device),
         "wandb_run_id": wandb_run.id if wandb_run is not None else resume_wandb_id,
