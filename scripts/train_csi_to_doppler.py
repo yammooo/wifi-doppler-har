@@ -77,8 +77,27 @@ def validate_config(config: dict[str, Any]) -> None:
     missing = required_splits - set(config["data"]["splits"])
     if missing:
         raise ValueError(f"Missing data splits: {sorted(missing)}")
-    if config["training"]["loss"] != "mse":
-        raise ValueError("The baseline trainer currently supports training.loss=mse only.")
+    if config["training"]["loss"] not in {"mse", "motion_weighted_wasserstein"}:
+        raise ValueError(
+            "training.loss must be mse or motion_weighted_wasserstein."
+        )
+    loss_options = config["training"].get("loss_options", {})
+    if not isinstance(loss_options, dict):
+        raise ValueError("training.loss_options must be a mapping.")
+    if config["training"]["loss"] == "motion_weighted_wasserstein":
+        nonnegative_options = (
+            "center_half_width",
+            "motion_weight",
+            "wasserstein_weight",
+            "raw_mse_weight",
+        )
+        if any(float(loss_options.get(key, 0)) < 0 for key in nonnegative_options):
+            raise ValueError(f"Loss options {nonnegative_options} must be non-negative.")
+        if float(loss_options.get("smooth_l1_beta", 0.1)) <= 0:
+            raise ValueError("training.loss_options.smooth_l1_beta must be positive.")
+    early_stopping_metric = config["training"].get("early_stopping_metric", "mse")
+    if early_stopping_metric not in {"loss", "mse"}:
+        raise ValueError("training.early_stopping_metric must be loss or mse.")
     if config["model"]["num_subcarriers"] != config["data"]["num_subcarriers"]:
         raise ValueError("model.num_subcarriers must match data.num_subcarriers.")
     if config["model"]["output_time"] != config["data"]["doppler_window_size"]:
@@ -445,6 +464,8 @@ def main() -> None:
     max_examples = int(config["training"]["validation_examples"])
     patience = int(config["training"]["early_stopping_patience"])
     min_delta = float(config["training"]["early_stopping_min_delta"])
+    early_stopping_metric = str(config["training"].get("early_stopping_metric", "mse"))
+    loss_options = config["training"].get("loss_options", {})
     latest_path = training_dir / "latest.pt"
     best_path = run_dir / "model.pt"
 
@@ -483,6 +504,7 @@ def main() -> None:
                 scaler=scaler,
                 amp_enabled=amp_enabled,
                 loss_name=config["training"]["loss"],
+                loss_options=loss_options,
                 global_step=global_step,
                 batch_callback=log_batch if wandb_run is not None else None,
                 batch_callback_every=log_every,
@@ -497,14 +519,15 @@ def main() -> None:
                     device=device,
                     amp_enabled=amp_enabled,
                     loss_name=config["training"]["loss"],
+                    loss_options=loss_options,
                     global_step=global_step,
                     max_examples=max_examples,
                 )
 
-            target_mse = evaluations["target_val"].metrics["mse"]
-            improved = target_mse < best_metric - min_delta
+            target_metric = evaluations["target_val"].metrics[early_stopping_metric]
+            improved = target_metric < best_metric - min_delta
             if improved:
-                best_metric = target_mse
+                best_metric = target_metric
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -515,7 +538,7 @@ def main() -> None:
                 "train": train_result.metrics,
                 "source_val": evaluations["source_val"].metrics,
                 "target_val": evaluations["target_val"].metrics,
-                "best_target_val_mse": best_metric,
+                f"best_target_val_{early_stopping_metric}": best_metric,
                 "patience_counter": patience_counter,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
@@ -550,7 +573,7 @@ def main() -> None:
                 "epoch": epoch,
                 "global_step": global_step,
                 "learning_rate": optimizer.param_groups[0]["lr"],
-                "early_stopping/best_target_val_mse": best_metric,
+                f"early_stopping/best_target_val_{early_stopping_metric}": best_metric,
                 "early_stopping/patience_counter": patience_counter,
                 **prefix_metrics("train", train_result.metrics),
                 **prefix_metrics("source_val", evaluations["source_val"].metrics),
@@ -566,20 +589,22 @@ def main() -> None:
                     wandb_run,
                     latest_path,
                     kind="latest",
-                    metadata={"epoch": epoch, "target_val_mse": target_mse},
+                    metadata={"epoch": epoch, f"target_val_{early_stopping_metric}": target_metric},
                 )
                 if improved:
                     log_model_artifact(
                         wandb_run,
                         best_path,
                         kind="best",
-                        metadata={"epoch": epoch, "target_val_mse": target_mse},
+                        metadata={"epoch": epoch, f"target_val_{early_stopping_metric}": target_metric},
                     )
 
             print(
-                f"epoch {epoch}: train_mse={train_result.metrics['mse']:.6g} "
-                f"source_val_mse={evaluations['source_val'].metrics['mse']:.6g} "
-                f"target_val_mse={target_mse:.6g} best={best_metric:.6g}"
+                f"epoch {epoch}: train_loss={train_result.metrics['loss']:.6g} "
+                f"source_val_loss={evaluations['source_val'].metrics['loss']:.6g} "
+                f"target_val_loss={evaluations['target_val'].metrics['loss']:.6g} "
+                f"target_val_mse={evaluations['target_val'].metrics['mse']:.6g} "
+                f"best_{early_stopping_metric}={best_metric:.6g}"
             )
             if patience_counter >= patience:
                 print(f"early stopping after {patience_counter} evaluations without improvement")
@@ -600,12 +625,13 @@ def main() -> None:
             device=device,
             amp_enabled=amp_enabled,
             loss_name=config["training"]["loss"],
+            loss_options=loss_options,
             global_step=global_step,
             max_examples=max_examples,
         )
         final_results = {
             "best_epoch": int(best_checkpoint["epoch"]),
-            "best_target_val_mse": best_metric,
+            f"best_target_val_{early_stopping_metric}": best_metric,
             "target_test": test_result.metrics,
         }
         save_json(training_dir / "final_test.json", final_results)
@@ -615,13 +641,13 @@ def main() -> None:
             for key, value in final_results["target_test"].items():
                 wandb_run.summary[f"target_test/{key}"] = value
             wandb_run.summary["best_epoch"] = final_results["best_epoch"]
-            wandb_run.summary["best_target_val_mse"] = best_metric
+            wandb_run.summary[f"best_target_val_{early_stopping_metric}"] = best_metric
 
         run_record.update(
             {
                 "status": "completed",
                 "best_epoch": final_results["best_epoch"],
-                "best_target_val_mse": best_metric,
+                f"best_target_val_{early_stopping_metric}": best_metric,
                 "target_test": final_results["target_test"],
                 "updated_at": utc_now(),
             }

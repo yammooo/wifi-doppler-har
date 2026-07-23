@@ -46,13 +46,21 @@ model:
   bottleneck_channels: 256
 
 training:
-  loss: mse
+  loss: motion_weighted_wasserstein
+  loss_options:
+    floor: 0.0630957344
+    center_half_width: 1
+    motion_weight: 4.0
+    wasserstein_weight: 0.1
+    raw_mse_weight: 0.05
+    smooth_l1_beta: 0.1
   batch_size: 256
   learning_rate: 0.001
   epochs: 100
   amp: true
   early_stopping_patience: 10
   early_stopping_min_delta: 0.0
+  early_stopping_metric: loss
   log_every_steps: 20
   validation_examples: 2
   prefetch_batches: 2

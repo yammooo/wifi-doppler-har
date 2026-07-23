@@ -150,6 +150,32 @@ class DistillationTests(unittest.TestCase):
         self.assertAlmostEqual(result["mse_antenna_0"], 5 / 3)
         self.assertAlmostEqual(result["mse_antenna_1"], 4 / 3)
 
+    def test_motion_weighted_wasserstein_uses_doppler_bin_distance(self) -> None:
+        target = torch.zeros(1, 1, 1, 5)
+        prediction = torch.zeros_like(target)
+        target[..., 3] = 1
+        prediction[..., 1] = 1
+
+        loss = distillation_loss(
+            prediction,
+            target,
+            name="motion_weighted_wasserstein",
+            options={
+                "floor": 0,
+                "center_half_width": 0,
+                "motion_weight": 0,
+                "wasserstein_weight": 1,
+                "raw_mse_weight": 0,
+                "smooth_l1_beta": 0.1,
+            },
+        )
+        active_map_loss = torch.nn.functional.smooth_l1_loss(
+            prediction,
+            target,
+            beta=0.1,
+        )
+        self.assertAlmostEqual(float(loss - active_map_loss), 0.5, places=6)
+
     def test_recording_iterator_loads_once_and_covers_all_windows(self) -> None:
         dataset = FakeDataset()
         batches = list(iter_recording_batches(dataset, batch_size=1, shuffle=False, seed=4))
@@ -359,13 +385,22 @@ class PairedDatasetTests(unittest.TestCase):
                     "bottleneck_channels": 8,
                 },
                 "training": {
-                    "loss": "mse",
+                    "loss": "motion_weighted_wasserstein",
+                    "loss_options": {
+                        "floor": 0.0630957344,
+                        "center_half_width": 1,
+                        "motion_weight": 4.0,
+                        "wasserstein_weight": 0.1,
+                        "raw_mse_weight": 0.05,
+                        "smooth_l1_beta": 0.1,
+                    },
                     "batch_size": 2,
                     "learning_rate": 0.001,
                     "epochs": 1,
                     "amp": False,
                     "early_stopping_patience": 1,
                     "early_stopping_min_delta": 0.0,
+                    "early_stopping_metric": "loss",
                     "log_every_steps": 1,
                     "validation_examples": 0,
                 },

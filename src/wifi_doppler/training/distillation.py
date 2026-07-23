@@ -36,6 +36,7 @@ def distillation_loss(
     targets: torch.Tensor,
     *,
     name: str = "mse",
+    options: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     """Compute the configured student/teacher regression objective."""
     if predictions.shape != targets.shape:
@@ -44,7 +45,71 @@ def distillation_loss(
         )
     if name == "mse":
         return F.mse_loss(predictions, targets)
+    if name == "motion_weighted_wasserstein":
+        return motion_weighted_wasserstein_loss(predictions, targets, **(options or {}))
     raise ValueError(f"Unknown distillation loss: {name!r}")
+
+
+def motion_weighted_wasserstein_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    floor: float = 10**-1.2,
+    center_half_width: int = 1,
+    motion_weight: float = 4.0,
+    wasserstein_weight: float = 0.1,
+    raw_mse_weight: float = 0.05,
+    smooth_l1_beta: float = 0.1,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Compare active Doppler amplitude and its location along the last axis."""
+    if predictions.ndim != 4:
+        raise ValueError(
+            "Expected predictions [batch, antenna, time, doppler_bin], "
+            f"got {tuple(predictions.shape)}"
+        )
+    if center_half_width < 0 or center_half_width >= predictions.shape[-1] // 2:
+        raise ValueError("center_half_width must select a proper subset of Doppler bins.")
+
+    # Keep the distribution calculations stable under CUDA autocast.
+    predictions = predictions.float()
+    targets = targets.float()
+    pred_active = (predictions - floor).clamp_min(0)
+    target_active = (targets - floor).clamp_min(0)
+
+    target_mass = target_active.sum(dim=-1)
+    center = predictions.shape[-1] // 2
+    center_mass = target_active[
+        ..., center - center_half_width : center + center_half_width + 1
+    ].sum(dim=-1)
+    motion_ratio = (target_mass - center_mass).clamp_min(0) / target_mass.clamp_min(eps)
+    frame_weight = 1.0 + motion_weight * motion_ratio
+
+    active_frame_error = F.smooth_l1_loss(
+        pred_active,
+        target_active,
+        reduction="none",
+        beta=smooth_l1_beta,
+    ).mean(dim=-1)
+    active_map_loss = (active_frame_error * frame_weight).sum() / frame_weight.sum()
+
+    num_bins = predictions.shape[-1]
+    pred_distribution = (pred_active + eps) / (
+        pred_active.sum(dim=-1, keepdim=True) + eps * num_bins
+    )
+    target_distribution = (target_active + eps) / (
+        target_active.sum(dim=-1, keepdim=True) + eps * num_bins
+    )
+    frame_wasserstein = (
+        pred_distribution.cumsum(dim=-1) - target_distribution.cumsum(dim=-1)
+    ).abs().sum(dim=-1) / (num_bins - 1)
+    wasserstein_loss = (frame_wasserstein * frame_weight).sum() / frame_weight.sum()
+
+    return (
+        active_map_loss
+        + wasserstein_weight * wasserstein_loss
+        + raw_mse_weight * F.mse_loss(predictions, targets)
+    )
 
 
 class DistillationMetricAccumulator:
@@ -312,6 +377,7 @@ def run_distillation_epoch(
     scaler: Any | None = None,
     amp_enabled: bool = False,
     loss_name: str = "mse",
+    loss_options: dict[str, Any] | None = None,
     global_step: int = 0,
     max_examples: int = 0,
     batch_callback: Callable[[int, dict[str, float]], None] | None = None,
@@ -326,6 +392,7 @@ def run_distillation_epoch(
     examples: list[dict[str, Any]] = []
     num_batches = 0
     num_samples = 0
+    objective_sum = 0.0
     started_at = time.perf_counter()
 
     grad_context = torch.enable_grad if training else torch.inference_mode
@@ -341,7 +408,12 @@ def run_distillation_epoch(
                 optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
                 predictions = model(inputs)
-                loss = distillation_loss(predictions, targets, name=loss_name)
+                loss = distillation_loss(
+                    predictions,
+                    targets,
+                    name=loss_name,
+                    options=loss_options,
+                )
             if not torch.isfinite(loss):
                 raise FloatingPointError(
                     f"Non-finite {loss_name} loss for batch beginning with {batch.filenames[0]}"
@@ -359,7 +431,7 @@ def run_distillation_epoch(
 
             accumulator.update(predictions, targets)
             if batch_callback is not None and global_step % batch_callback_every == 0:
-                batch_callback(global_step, {"mse": float(loss.detach().item())})
+                batch_callback(global_step, {"loss": float(loss.detach().item())})
 
             remaining_examples = max_examples - len(examples)
             if remaining_examples > 0:
@@ -374,9 +446,11 @@ def run_distillation_epoch(
 
             num_batches += 1
             num_samples += inputs.shape[0]
+            objective_sum += float(loss.detach().item()) * inputs.shape[0]
 
     elapsed = time.perf_counter() - started_at
     metrics = accumulator.compute()
+    metrics["loss"] = objective_sum / num_samples
     metrics["samples_per_second"] = num_samples / elapsed if elapsed > 0 else 0.0
     metrics["elapsed_seconds"] = elapsed
     return EpochResult(
