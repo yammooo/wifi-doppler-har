@@ -107,6 +107,15 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("model.output_time must match data.doppler_window_size.")
     if config["training"]["batch_size"] < 1 or config["training"]["epochs"] < 1:
         raise ValueError("training.batch_size and training.epochs must be >= 1.")
+    recordings_per_batch = config["training"].get("recordings_per_batch", 1)
+    if (
+        not isinstance(recordings_per_batch, int)
+        or isinstance(recordings_per_batch, bool)
+        or not 1 <= recordings_per_batch <= config["training"]["batch_size"]
+    ):
+        raise ValueError("training.recordings_per_batch must be an integer between 1 and batch_size.")
+    if recordings_per_batch > 1 and config["data"].get("storage", "source") != "memmap":
+        raise ValueError("Mixed-recording batches require data.storage=memmap.")
     if config["training"]["early_stopping_patience"] < 1:
         raise ValueError("training.early_stopping_patience must be >= 1.")
     if config["training"]["log_every_steps"] < 1:
@@ -478,6 +487,9 @@ def main() -> None:
             batch_size=batch_size,
             shuffle=shuffle,
             seed=batch_seed,
+            recordings_per_batch=(
+                int(config["training"].get("recordings_per_batch", 1)) if shuffle else 1
+            ),
         )
         host_batches = prefetch_batches(
             host_batches,

@@ -195,14 +195,13 @@ def iter_recording_batches(
     batch_size: int,
     shuffle: bool,
     seed: int,
+    recordings_per_batch: int = 1,
 ) -> Iterator[DistillationBatch]:
-    """Yield all windows while loading each backing recording once.
-
-    Batches never cross recording boundaries. This bounds host memory to one
-    recording and avoids re-reading large MAT/pickle files for every window.
-    """
+    """Yield all windows from bounded pools of backing recordings."""
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
+    if recordings_per_batch < 1 or recordings_per_batch > batch_size:
+        raise ValueError("recordings_per_batch must be between 1 and batch_size.")
 
     by_recording: dict[int, list[tuple[int, int]]] = {}
     for base_idx, window in enumerate(dataset.window_indexes):
@@ -214,23 +213,55 @@ def iter_recording_batches(
     if shuffle:
         rng.shuffle(recording_order)
 
-    for recording_idx_value in recording_order:
-        recording_idx = int(recording_idx_value)
-        recording = dataset.traces[recording_idx]
-        items = list(by_recording[recording_idx])
-        if shuffle:
-            rng.shuffle(items)
+    for pool_offset in range(0, len(recording_order), recordings_per_batch):
+        pool = [int(value) for value in recording_order[pool_offset : pool_offset + recordings_per_batch]]
+        pool_items: dict[int, list[tuple[int, int]]] = {}
+        for recording_idx in pool:
+            items = list(by_recording[recording_idx])
+            if shuffle:
+                rng.shuffle(items)
+            pool_items[recording_idx] = items
 
-        raw = recording.load_raw()
-        doppler = recording.load_doppler()
+        interleaved: list[tuple[int, int, int]] = []
+        positions = {recording_idx: 0 for recording_idx in pool}
+        active = list(pool)
+        while active:
+            if shuffle:
+                rng.shuffle(active)
+            remaining = []
+            for recording_idx in active:
+                position = positions[recording_idx]
+                items = pool_items[recording_idx]
+                base_idx, view_idx = items[position]
+                interleaved.append((recording_idx, base_idx, view_idx))
+                positions[recording_idx] = position + 1
+                if position + 1 < len(items):
+                    remaining.append(recording_idx)
+            active = remaining
+
+        loaded: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         try:
-            for offset in range(0, len(items), batch_size):
-                batch_items = items[offset : offset + batch_size]
+            for recording_idx in pool:
+                loaded[recording_idx] = (
+                    dataset.traces[recording_idx].load_raw(),
+                    dataset.traces[recording_idx].load_doppler(),
+                )
+            for offset in range(0, len(interleaved), batch_size):
+                batch_items = sorted(
+                    interleaved[offset : offset + batch_size],
+                    key=lambda item: (
+                        item[0],
+                        dataset.window_indexes[item[1]].start,
+                        item[2],
+                    ),
+                )
                 inputs: list[np.ndarray] = []
                 targets: list[np.ndarray] = []
                 filenames: list[str] = []
 
-                for base_idx, view_idx in batch_items:
+                for recording_idx, base_idx, view_idx in batch_items:
+                    recording = dataset.traces[recording_idx]
+                    raw, doppler = loaded[recording_idx]
                     window = dataset.window_indexes[base_idx]
                     selected_subcarriers = dataset.subcarrier_views[view_idx]
                     raw_start, raw_end = dataset.raw_bounds_for_doppler_window(window.start, window.end)
@@ -256,7 +287,9 @@ def iter_recording_batches(
                     filenames=tuple(filenames),
                 )
         finally:
-            recording.clear_cache()
+            for recording_idx in pool:
+                dataset.traces[recording_idx].clear_cache()
+            loaded.clear()
 
 
 @dataclass(frozen=True)

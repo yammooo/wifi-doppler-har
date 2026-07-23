@@ -55,6 +55,7 @@ training:
     raw_mse_weight: 0.05
     smooth_l1_beta: 0.1
   batch_size: 256
+  recordings_per_batch: 8
   learning_rate: 0.001
   epochs: 100
   amp: true

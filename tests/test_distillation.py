@@ -16,7 +16,7 @@ import scipy.io as sio
 import torch
 import yaml
 
-from scripts.train_csi_to_doppler import configure_cuda_convolution_backend
+from scripts.train_csi_to_doppler import configure_cuda_convolution_backend, validate_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -61,9 +61,11 @@ class FakeRecording:
 
 
 class FakeDataset:
-    def __init__(self):
+    def __init__(self, num_views: int = 1):
         self.traces = [FakeRecording("recording_a", 0), FakeRecording("recording_b", 100)]
-        self.subcarrier_views = (np.asarray([0, 2]),)
+        self.subcarrier_views = tuple(
+            np.asarray(view) for view in ([0, 2], [1, 2])[:num_views]
+        )
         self.window_indexes = [
             WindowIndex(0, 0, 3),
             WindowIndex(0, 3, 6),
@@ -72,7 +74,7 @@ class FakeDataset:
         ]
 
     def __len__(self) -> int:
-        return len(self.window_indexes)
+        return len(self.window_indexes) * len(self.subcarrier_views)
 
     @staticmethod
     def raw_bounds_for_doppler_window(start: int, end: int) -> tuple[int, int]:
@@ -200,6 +202,64 @@ class DistillationTests(unittest.TestCase):
         self.assertEqual(order(8), order(8))
         self.assertNotEqual(order(8), order(9))
 
+    def test_mixed_recording_batches_are_balanced_and_cover_every_view(self) -> None:
+        dataset = FakeDataset(num_views=2)
+        batches = list(
+            iter_recording_batches(
+                dataset,
+                batch_size=4,
+                shuffle=True,
+                seed=3,
+                recordings_per_batch=2,
+            )
+        )
+        filenames = [filename for batch in batches for filename in batch.filenames]
+
+        self.assertEqual(len(filenames), len(dataset))
+        self.assertEqual(len(set(filenames)), len(dataset))
+        for batch in batches:
+            counts = {
+                name: sum(filename.startswith(name) for filename in batch.filenames)
+                for name in ("recording_a", "recording_b")
+            }
+            self.assertEqual(counts, {"recording_a": 2, "recording_b": 2})
+        for recording in dataset.traces:
+            self.assertEqual(recording.raw_loads, 1)
+            self.assertEqual(recording.doppler_loads, 1)
+
+    def test_mixed_recording_iterator_is_deterministic_for_a_seed(self) -> None:
+        def order(seed: int) -> list[str]:
+            dataset = FakeDataset(num_views=2)
+            return [
+                filename
+                for batch in iter_recording_batches(
+                    dataset,
+                    batch_size=4,
+                    shuffle=True,
+                    seed=seed,
+                    recordings_per_batch=2,
+                )
+                for filename in batch.filenames
+            ]
+
+        self.assertEqual(order(8), order(8))
+        self.assertNotEqual(order(8), order(9))
+
+    def test_mixed_recording_batches_require_memmap_storage(self) -> None:
+        config = yaml.safe_load(
+            (PROJECT_ROOT / "configs" / "csi_to_doppler" / "pi_cross_domain_mse.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        config["data"]["storage"] = "source"
+        with self.assertRaisesRegex(ValueError, "require data.storage=memmap"):
+            validate_config(config)
+        config["data"]["storage"] = "memmap"
+        for invalid in (0, config["training"]["batch_size"] + 1, 1.5):
+            config["training"]["recordings_per_batch"] = invalid
+            with self.assertRaisesRegex(ValueError, "integer between 1 and batch_size"):
+                validate_config(config)
+
     def test_one_epoch_cpu_smoke(self) -> None:
         dataset = FakeDataset()
         model = TinyStudent()
@@ -317,12 +377,17 @@ class PairedDatasetTests(unittest.TestCase):
 
             packet_values = np.arange(1, 169, dtype=np.float32)[:, None]
             subcarrier_values = np.arange(1, 257, dtype=np.float32)[None, :]
-            csi_buff = (packet_values + subcarrier_values).astype(np.complex64) * (1 + 1j)
-            sio.savemat(raw_dir / "PI1a_p03.mat", {"csi_buff": csi_buff})
-            for antenna in range(4):
-                target = np.full((40, 100), 0.1 * (antenna + 1), dtype=np.float32)
-                with (doppler_dir / f"PI1a_p03_stream_{antenna}.txt").open("wb") as stream:
-                    pickle.dump(target, stream)
+            for person, offset in (("p03", 0), ("p05", 10)):
+                csi_buff = (packet_values + subcarrier_values + offset).astype(np.complex64) * (1 + 1j)
+                sio.savemat(raw_dir / f"PI1a_{person}.mat", {"csi_buff": csi_buff})
+                for antenna in range(4):
+                    target = np.full(
+                        (40, 100),
+                        0.1 * (antenna + 1) + offset / 100,
+                        dtype=np.float32,
+                    )
+                    with (doppler_dir / f"PI1a_{person}_stream_{antenna}.txt").open("wb") as stream:
+                        pickle.dump(target, stream)
 
             prepared_root = root / "prepared"
             converted = subprocess.run(
@@ -395,6 +460,7 @@ class PairedDatasetTests(unittest.TestCase):
                         "smooth_l1_beta": 0.1,
                     },
                     "batch_size": 2,
+                    "recordings_per_batch": 2,
                     "learning_rate": 0.001,
                     "epochs": 1,
                     "amp": False,
