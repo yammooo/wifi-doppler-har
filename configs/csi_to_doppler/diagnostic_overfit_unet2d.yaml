@@ -1,0 +1,85 @@
+run:
+  id: null
+  output_root: experiments/runs
+  seed: 0
+
+device: auto
+
+data:
+  storage: memmap
+  raw_root: data/CSI-80Mhz
+  doppler_root: data/doppler_traces_pi
+  prepared_root: data/csi_doppler_memmap
+  doppler_window_size: 340
+  window_stride: 30
+  split_guard: 31
+  doppler_start: 800
+  doppler_sample_length: 31
+  doppler_sliding: 1
+  num_subcarriers: 30
+  subcarrier_sampling: fixed_uniform
+  num_subcarrier_views: 1
+  subcarrier_seed: 0
+  target_transform: none
+  splits:
+    train:
+      scenarios: [PI-1a]
+      interval: [0.0, 0.6]
+    source_val:
+      scenarios: [PI-1a]
+      interval: [0.6, 0.8]
+    target_val:
+      scenarios: [PI-4a]
+      interval: [0.6, 0.8]
+    target_test:
+      scenarios: [PI-4a]
+      interval: [0.8, 1.0]
+
+model:
+  architecture: unet2d_decoder
+  num_antennas: 4
+  num_subcarriers: 30
+  input_parts: 2
+  output_doppler_bins: 100
+  output_time: 340
+  base_channels: 128
+  mid_channels: 192
+  bottleneck_channels: 256
+  decoder_channels: 16
+  decoder_coarse_bins: 25
+
+training:
+  loss: mse
+  loss_options: {}
+  batch_size: 16
+  recordings_per_batch: 1
+  learning_rate: 0.001
+  epochs: 1
+  amp: false
+  early_stopping_patience: 1
+  early_stopping_min_delta: 0.0
+  early_stopping_metric: mse
+  log_every_steps: 20
+  validation_examples: 2
+  prefetch_batches: 0
+  pin_memory: false
+  cuda_prefetch: false
+  cudnn_benchmark: true
+  allow_tf32: true
+
+diagnostic:
+  recording: PI-1a_p03
+  num_windows: 16
+  center_half_width: 5
+  floor: 0.0630957344
+  steps: 2000
+  log_every_steps: 20
+  image_every_steps: 200
+
+wandb:
+  mode: online
+  project: wifi-doppler-har
+  entity: yammo-unipd
+  name: null
+  watch: null
+  watch_log_frequency: 100

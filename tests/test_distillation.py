@@ -17,6 +17,7 @@ import torch
 import yaml
 
 from scripts.train_csi_to_doppler import configure_cuda_convolution_backend, validate_config
+from scripts.overfit_csi_to_doppler import select_motion_rich_windows
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,44 @@ class FakeDataset:
     @staticmethod
     def raw_bounds_for_doppler_window(start: int, end: int) -> tuple[int, int]:
         return start, end
+
+
+class OverfitSelectionTests(unittest.TestCase):
+    def test_selects_non_overlapping_motion_rich_windows(self) -> None:
+        class Recording:
+            filename_stem = "recording"
+
+            def load_doppler(self) -> np.ndarray:
+                target = np.full((4, 12, 10), 0.05, dtype=np.float32)
+                target[:, 0:3, 0] = 1.0
+                target[:, 3:6, 1] = 0.8
+                target[:, 6:9, 2] = 0.6
+                target[:, 9:12, 3] = 0.4
+                return target
+
+        dataset = mock.Mock()
+        dataset.traces = [Recording()]
+        dataset.window_indexes = [
+            WindowIndex(0, 0, 3),
+            WindowIndex(0, 1, 4),
+            WindowIndex(0, 3, 6),
+            WindowIndex(0, 6, 9),
+            WindowIndex(0, 9, 12),
+        ]
+
+        selected = select_motion_rich_windows(
+            dataset,
+            recording_name="recording",
+            num_windows=3,
+            center_half_width=1,
+            floor=0.05,
+        )
+
+        self.assertEqual([index for index, _ in selected], [0, 2, 3])
+        windows = [dataset.window_indexes[index] for index, _ in selected]
+        self.assertTrue(
+            all(left.end <= right.start for left, right in zip(windows, windows[1:]))
+        )
 
 
 class TinyStudent(torch.nn.Module):
