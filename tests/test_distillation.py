@@ -251,9 +251,12 @@ class DistillationTests(unittest.TestCase):
 
     def test_mixed_recording_batches_require_memmap_storage(self) -> None:
         config = yaml.safe_load(
-            (PROJECT_ROOT / "configs" / "csi_to_doppler" / "pi_cross_domain_mse.yaml").read_text(
-                encoding="utf-8"
-            )
+            (
+                PROJECT_ROOT
+                / "configs"
+                / "csi_to_doppler"
+                / "pi_cross_domain_unet1d_spatial_head.yaml"
+            ).read_text(encoding="utf-8")
         )
         config["data"]["storage"] = "source"
         with self.assertRaisesRegex(ValueError, "require data.storage=memmap"):
@@ -382,9 +385,12 @@ class CsiToDopplerModelTests(unittest.TestCase):
 
     def test_spatial_model_config_validation(self) -> None:
         config = yaml.safe_load(
-            (PROJECT_ROOT / "configs" / "csi_to_doppler" / "pi_cross_domain_mse.yaml").read_text(
-                encoding="utf-8"
-            )
+            (
+                PROJECT_ROOT
+                / "configs"
+                / "csi_to_doppler"
+                / "pi_cross_domain_unet1d_spatial_head.yaml"
+            ).read_text(encoding="utf-8")
         )
         config["model"]["architecture"] = "unknown"
         with self.assertRaisesRegex(ValueError, "model.architecture"):

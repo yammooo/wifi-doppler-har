@@ -89,19 +89,31 @@ python scripts/convert_csi_doppler_memmap.py
 
 The converter preserves all 242 cleaned CSI subcarriers and direct float32
 Doppler targets under `data/csi_doppler_memmap`. Conversion is resumable: files
-already completed are skipped unless `--overwrite` is provided. Then train:
+already completed are skipped unless `--overwrite` is provided.
+
+Architecture-specific training configs are provided for the legacy 1D U-Net,
+the 1D U-Net with a spatial 2D head, and the full 2D decoder:
+
+- `pi_cross_domain_unet1d_legacy.yaml`
+- `pi_cross_domain_unet1d_spatial_head.yaml`
+- `pi_cross_domain_unet2d_decoder.yaml`
+
+Treat experiment configs as immutable. Copy one to a descriptively named file
+before changing architecture, input selection, loss, or dataset splits.
+
+For example, train the full 2D decoder with:
 
 ```bash
 conda activate wifi-doppler-har
 python scripts/train_csi_to_doppler.py \
-    --config configs/csi_to_doppler/pi_cross_domain_mse.yaml
+    --config configs/csi_to_doppler/pi_cross_domain_unet2d_decoder.yaml
 ```
 
 Configuration values can be overridden without editing the YAML:
 
 ```bash
 python scripts/train_csi_to_doppler.py \
-    --config configs/csi_to_doppler/pi_cross_domain_mse.yaml \
+    --config configs/csi_to_doppler/pi_cross_domain_unet2d_decoder.yaml \
     --set training.learning_rate=0.0005 \
     --set wandb.mode=disabled
 ```
@@ -110,7 +122,7 @@ Resume an interrupted local run from its complete training checkpoint:
 
 ```bash
 python scripts/train_csi_to_doppler.py \
-    --config configs/csi_to_doppler/pi_cross_domain_mse.yaml \
+    --config configs/csi_to_doppler/pi_cross_domain_unet2d_decoder.yaml \
     --resume experiments/runs/<run-id>/training/latest.pt
 ```
 
