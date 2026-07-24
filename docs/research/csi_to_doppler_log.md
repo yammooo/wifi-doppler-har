@@ -99,6 +99,8 @@ Dates and times in run names use Europe/Rome local time.
 | 2026-07-23 | [`gzfqzvqv`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/gzfqzvqv) | 1D U-Net plus spatial 2D head, composite | memmap, batch 256, 8 recordings/batch | finished, 16 epochs | best target loss 0.019883; best target MSE 0.005333; train 712 samples/s |
 | 2026-07-23 | [`oqqlhyvm`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/oqqlhyvm) | full 2D decoder, composite | memmap, batch 256, 8 recordings/batch | crashed after 5 epochs | best target loss 0.027407; train 75 samples/s |
 | 2026-07-23/24 | [`0varxc4c`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/0varxc4c) | full 2D decoder, composite | memmap, batch 256, 8 recordings/batch | finished, 18 epochs | best target loss 0.025239 and MSE 0.007548 at epoch 8; train 78 samples/s |
+| 2026-07-24 | [`cwj0myug`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/cwj0myug) | full 2D decoder, MSE, tiny overfit | 30 carriers, fixed batch of 16 windows | finished, 2,000 steps | final eval MSE 0.00003881; off-center MSE 0.00002805 |
+| 2026-07-24 | [`tm8nyt19`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tm8nyt19) | full 2D decoder, MSE, tiny overfit | 242 carriers, same fixed 16 windows | finished, 2,000 steps | final eval MSE 0.00004194; off-center MSE 0.00003240 |
 
 The early MSE runs used historical revisions of
 `pi_cross_domain_mse.yaml`. Their resolved configs remain attached to W&B.
@@ -686,8 +688,75 @@ python scripts/overfit_csi_to_doppler.py \
     --set model.num_subcarriers=242
 ```
 
-The two runs must be linked here after completion; their W&B IDs do not exist
-yet.
+**Completed runs**
+
+- 30 carriers: [`cwj0myug`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/cwj0myug)
+- 242 carriers: [`tm8nyt19`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tm8nyt19)
+
+Both runs used the same 16 selected windows, seed, architecture widths, plain
+MSE, learning rate `1e-3`, and 2,000 optimizer steps. The only intended
+difference was `data.num_subcarriers` and `model.num_subcarriers`.
+
+**Convergence measurements**
+
+| Step | 30-carrier eval MSE | 242-carrier eval MSE |
+|---:|---:|---:|
+| 1 | 0.061880 | 0.068409 |
+| 100 | 0.003072 | 0.004945 |
+| 200 | 0.000728 | 0.002361 |
+| 500 | 0.000260 | 0.000287 |
+| 1,000 | 0.00006905 | 0.00010577 |
+| 1,500 | 0.00005534 | 0.00009248 |
+| 2,000 | **0.00003881** | **0.00004194** |
+
+Final diagnostics:
+
+| Metric | 30 carriers | 242 carriers |
+|---|---:|---:|
+| train-mode MSE | 0.00003371 | 0.00004088 |
+| eval-mode MSE | 0.00003881 | 0.00004194 |
+| eval off-center MSE | 0.00002805 | 0.00003240 |
+| eval background leakage | 0.001417 | 0.001431 |
+| eval maximum absolute error | 0.17895 | 0.17296 |
+| eval negative fraction | 0.00000643 | 0.00000551 |
+| trainable parameters | 2,410,836 | 2,627,924 |
+| W&B runtime | 127 s | 131 s |
+
+**Visual observation**
+
+The final fixed examples in both W&B runs reproduce narrow temporal changes,
+center-ridge shape, and off-center Doppler lobes across all four antennas.
+They no longer resemble the constant vertical mean-spectrum outputs seen in
+full-dataset training. Residual error is low-amplitude and spatially diffuse;
+the largest errors remain around sharp local peaks.
+
+**Interpretation**
+
+1. The full 2D decoder, optimizer, and plain-MSE path can clearly memorize
+   these 16 motion-rich CSI/Doppler pairs. Basic representational capacity is
+   not the immediate blocker.
+2. Thirty fixed-uniform carriers are sufficient for this memorization test.
+   All 242 carriers converged more slowly initially and did not improve the
+   final error. This does not show that extra carriers are useless for
+   held-out windows or cross-domain generalization.
+3. Train-mode and eval-mode errors are close after 2,000 steps. BatchNorm
+   running statistics can represent this one fixed recording once converged.
+   This does not reject the separate hypothesis that source-derived BatchNorm
+   statistics contribute to PI-4a instability.
+4. The result weakens insufficient model capacity as the primary explanation
+   for the failed full-data runs. It strengthens the case for objective
+   mismatch, limited independent recording diversity, domain shift, and
+   possibly missing full-recording context.
+5. Memorization cannot validate temporal alignment: a network can associate a
+   finite input window with an arbitrary target. Alignment still requires the
+   independent lag diagnostic.
+
+**Decision**
+
+Do not move the full training pipeline to 242 carriers based on this result.
+The next capacity/generalization diagnostic is the same plain-MSE test on 64
+motion-stratified windows from four source recordings, followed by held-out
+windows from those same recordings.
 
 ## Open Paper-Level Questions
 
