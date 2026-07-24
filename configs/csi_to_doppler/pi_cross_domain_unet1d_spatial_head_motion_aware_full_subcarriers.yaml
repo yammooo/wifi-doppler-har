@@ -56,7 +56,7 @@ training:
     motion_mse_weight: 0.25
     background_leakage_weight: 0.25
     wasserstein_weight: 0.05
-  batch_size: 128
+  batch_size: 256
   recordings_per_batch: 8
   learning_rate: 0.001
   epochs: 100
