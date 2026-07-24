@@ -103,6 +103,7 @@ Dates and times in run names use Europe/Rome local time.
 | 2026-07-23/24 | [`0varxc4c`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/0varxc4c) | full 2D decoder, composite | memmap, batch 256, 8 recordings/batch | finished, 18 epochs | best target loss 0.025239 and MSE 0.007548 at epoch 8; train 78 samples/s |
 | 2026-07-24 | [`cwj0myug`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/cwj0myug) | full 2D decoder, MSE, tiny overfit | 30 carriers, fixed batch of 16 windows | finished, 2,000 steps | final eval MSE 0.00003881; off-center MSE 0.00002805 |
 | 2026-07-24 | [`tm8nyt19`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tm8nyt19) | full 2D decoder, MSE, tiny overfit | 242 carriers, same fixed 16 windows | finished, 2,000 steps | final eval MSE 0.00004194; off-center MSE 0.00003240 |
+| 2026-07-24 | [`tio9b4ad`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tio9b4ad) | 1D U-Net plus spatial 2D head, motion-aware MSE | memmap, batch 256, 8 recordings/batch | running | epochs 2-4 trained at 434-437 samples/s |
 
 The early MSE runs used historical revisions of
 `pi_cross_domain_mse.yaml`. Their resolved configs remain attached to W&B.
@@ -921,8 +922,70 @@ python scripts/train_csi_to_doppler.py \
     --config configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_aware.yaml
 ```
 
-No W&B run exists yet. Link it in the run index and this entry after training
-starts.
+Training began in W&B run
+[`tio9b4ad`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tio9b4ad).
+Preliminary measurements follow.
+
+### Motion-aware run: preliminary utilization diagnosis
+
+**Run**
+
+[`tio9b4ad`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tio9b4ad),
+running on an NVIDIA GeForce RTX 2070 with 8 GB VRAM.
+
+**Measurements through epoch 4**
+
+| Epoch | Train seconds | Train samples/s | Source-val seconds | Target-val seconds | Peak allocated VRAM |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 78.06 | 343 | 12.81 | 4.83 | 6.51 GB |
+| 2 | 61.56 | 435 | 11.69 | 4.27 | 4.09 GB |
+| 3 | 61.26 | 437 | 11.59 | 4.06 | 4.19 GB |
+| 4 | 61.69 | 434 | 11.60 | 4.10 | 4.00 GB |
+
+The earlier spatial-head run
+[`gzfqzvqv`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/gzfqzvqv)
+used the same architecture and batching with the legacy composite objective.
+It trained at 467-537 samples/s in epochs 2-5. The new objective is therefore
+approximately 7-19% slower after warm-up, not an order-of-magnitude
+regression. Validation is roughly twice as slow because the motion-aware loss
+adds target weighting, background masking, and two full 100-bin cumulative
+distributions.
+
+**GPU event-stream observation**
+
+W&B samples the RTX 2070 at approximately 15-second intervals. Samples
+alternate between active GPU clocks/utilization and zero utilization. The
+zeroes are real, but the sparse chart mixes several different phases:
+
+- approximately 62 seconds of training per epoch;
+- approximately 16 seconds of source/target validation;
+- CPU-side heatmap rendering, checkpoint serialization, and W&B artifact
+  handling between epochs;
+- intermittent host batch preparation and memmap page faults.
+
+Logged groups of 20 training steps alternate between approximately 6.4
+seconds and 12-15 seconds. The slower groups are consistent with transitions
+between the four pools of eight recordings, where new memmaps begin serving
+randomly shuffled windows. Steady groups correspond to approximately 800
+samples/s, showing that the GPU is fed substantially faster once a pool is
+warm.
+
+Host memory was already 80-83% utilized, with only 2.6-3.2 GB available and
+the training process using 3.6-4.2 GB RSS. A large pinned-memory prefetch queue
+would risk paging. Doubling batch size is also unsafe because first-epoch peak
+allocation already reached 6.51 GB on an 8 GB GPU.
+
+**Decision**
+
+- Do not alter the active run or its immutable config mid-experiment.
+- Do not increase batch size from 256.
+- The current `prefetch_batches: 2` remains conservative for this run.
+- If input utilization remains a priority after evaluating model quality,
+  benchmark only `prefetch_batches: 2` versus `4` on one epoch. This runtime
+  setting can be changed on resume, but expected gains are limited and must be
+  checked against host-memory pressure.
+- Treat low utilization during validation, plotting, and artifact upload as
+  expected epoch-end overhead rather than model-training starvation.
 
 ## Open Paper-Level Questions
 

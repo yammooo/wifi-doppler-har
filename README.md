@@ -102,6 +102,7 @@ with a spatial 2D head, and the full 2D decoder:
 - `pi_cross_domain_unet1d_spatial_head.yaml`
 - `pi_cross_domain_unet2d_decoder.yaml`
 - `pi_cross_domain_unet1d_spatial_head_motion_aware.yaml`
+- `pi_cross_domain_unet1d_spatial_head_motion_aware_full_subcarriers.yaml`
 
 Treat experiment configs as immutable. Copy one to a descriptively named file
 before changing architecture, input selection, loss, or dataset splits.
