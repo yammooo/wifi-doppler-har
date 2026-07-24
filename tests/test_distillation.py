@@ -35,6 +35,7 @@ from wifi_doppler.training.distillation import (
     DistillationMetricAccumulator,
     count_recording_batches,
     distillation_loss,
+    distillation_loss_components,
     iter_recording_batches,
     load_training_checkpoint,
     move_batches_to_device,
@@ -221,6 +222,88 @@ class DistillationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(float(loss - active_map_loss), 0.5, places=6)
 
+    def test_motion_aware_mse_components_target_peaks_and_leakage(self) -> None:
+        floor = 0.1
+        target = torch.full((1, 1, 1, 7), floor)
+        prediction = target.clone()
+        target[..., 6] = 1
+        prediction[..., 6] = 0.5
+        prediction[..., 0] = 0.3
+
+        components = distillation_loss_components(
+            prediction,
+            target,
+            name="motion_aware_mse",
+            options={
+                "floor": floor,
+                "center_half_width": 1,
+                "motion_mse_weight": 0.25,
+                "background_leakage_weight": 0.25,
+                "wasserstein_weight": 0.05,
+                "eps": 1e-12,
+            },
+        )
+
+        self.assertAlmostEqual(float(components["loss_full_map_mse"]), 0.29 / 7)
+        self.assertAlmostEqual(float(components["motion_mse"]), 0.25)
+        self.assertAlmostEqual(float(components["background_leakage"]), 0.2 / 6)
+        self.assertAlmostEqual(float(components["motion_wasserstein"]), 1 / 3, places=5)
+        self.assertAlmostEqual(float(components["loss_motion_mse"]), 0.25 * 0.25)
+        self.assertAlmostEqual(
+            float(components["loss_background_leakage"]),
+            0.25 * 0.2 / 6,
+        )
+        self.assertAlmostEqual(
+            float(components["loss_motion_wasserstein"]),
+            0.05 / 3,
+            places=5,
+        )
+        expected = sum(
+            float(components[name])
+            for name in (
+                "loss_full_map_mse",
+                "loss_motion_mse",
+                "loss_background_leakage",
+                "loss_motion_wasserstein",
+            )
+        )
+        self.assertAlmostEqual(float(components["loss"]), expected)
+        self.assertAlmostEqual(
+            float(
+                distillation_loss(
+                    prediction,
+                    target,
+                    name="motion_aware_mse",
+                    options={
+                        "floor": floor,
+                        "center_half_width": 1,
+                        "motion_mse_weight": 0.25,
+                        "background_leakage_weight": 0.25,
+                        "wasserstein_weight": 0.05,
+                        "eps": 1e-12,
+                    },
+                )
+            ),
+            expected,
+        )
+
+    def test_motion_aware_mse_keeps_weak_motion_continuous(self) -> None:
+        floor = 0.1
+        prediction = torch.full((1, 1, 1, 7), floor, requires_grad=True)
+        target = torch.full_like(prediction, floor)
+        target[..., 0] = 0.11
+
+        motion_mse = distillation_loss_components(
+            prediction,
+            target,
+            name="motion_aware_mse",
+            options={"floor": floor, "center_half_width": 1},
+        )["motion_mse"]
+        motion_mse.backward()
+
+        self.assertGreater(float(motion_mse.detach()), 0)
+        self.assertLess(float(prediction.grad[..., 0]), 0)
+
     def test_recording_iterator_loads_once_and_covers_all_windows(self) -> None:
         dataset = FakeDataset()
         batches = list(iter_recording_batches(dataset, batch_size=1, shuffle=False, seed=4))
@@ -306,6 +389,31 @@ class DistillationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "integer between 1 and batch_size"):
                 validate_config(config)
 
+    def test_motion_aware_config_validation(self) -> None:
+        config = yaml.safe_load(
+            (
+                PROJECT_ROOT
+                / "configs"
+                / "csi_to_doppler"
+                / "pi_cross_domain_unet1d_spatial_head_motion_aware.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        validate_config(config)
+
+        config["training"]["loss_options"]["floor"] = 1
+        with self.assertRaisesRegex(ValueError, "floor"):
+            validate_config(config)
+        config["training"]["loss_options"]["floor"] = 0.0630957344
+
+        config["training"]["loss_options"]["center_half_width"] = 50
+        with self.assertRaisesRegex(ValueError, "center_half_width"):
+            validate_config(config)
+        config["training"]["loss_options"]["center_half_width"] = 5
+
+        config["training"]["loss_options"]["motion_mse_weight"] = -1
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            validate_config(config)
+
     def test_one_epoch_cpu_smoke(self) -> None:
         dataset = FakeDataset()
         model = TinyStudent()
@@ -321,6 +429,8 @@ class DistillationTests(unittest.TestCase):
             device=torch.device("cpu"),
             optimizer=optimizer,
             amp_enabled=False,
+            loss_name="motion_aware_mse",
+            loss_options={"floor": 0, "center_half_width": 1},
             batch_callback=lambda step, metrics: callback_steps.append((step, metrics)),
             batch_callback_every=2,
         )
@@ -328,6 +438,10 @@ class DistillationTests(unittest.TestCase):
         self.assertEqual(result.global_step, 2)
         self.assertNotEqual(float(before), float(model.scale.detach()))
         self.assertIn("mse", result.metrics)
+        self.assertIn("loss_full_map_mse", result.metrics)
+        self.assertIn("loss_motion_mse", result.metrics)
+        self.assertIn("loss_background_leakage", result.metrics)
+        self.assertIn("loss_motion_wasserstein", result.metrics)
         self.assertEqual([step for step, _ in callback_steps], [2])
 
     def test_checkpoint_restores_training_and_rng_state(self) -> None:
@@ -576,14 +690,13 @@ class PairedDatasetTests(unittest.TestCase):
                     "head_coarse_bins": 25,
                 },
                 "training": {
-                    "loss": "motion_weighted_wasserstein",
+                    "loss": "motion_aware_mse",
                     "loss_options": {
                         "floor": 0.0630957344,
-                        "center_half_width": 1,
-                        "motion_weight": 4.0,
-                        "wasserstein_weight": 0.1,
-                        "raw_mse_weight": 0.05,
-                        "smooth_l1_beta": 0.1,
+                        "center_half_width": 5,
+                        "motion_mse_weight": 0.25,
+                        "background_leakage_weight": 0.25,
+                        "wasserstein_weight": 0.05,
                     },
                     "batch_size": 2,
                     "recordings_per_batch": 2,

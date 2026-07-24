@@ -51,14 +51,16 @@ Entry template:
   - [Legacy 1D U-Net](../../configs/csi_to_doppler/pi_cross_domain_unet1d_legacy.yaml)
   - [1D U-Net with spatial 2D head](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head.yaml)
   - [Full 2D decoder](../../configs/csi_to_doppler/pi_cross_domain_unet2d_decoder.yaml)
+  - [1D U-Net with spatial 2D head and motion-aware loss](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_aware.yaml)
 - Training CLI: [train_csi_to_doppler.py](../../scripts/train_csi_to_doppler.py)
 - Dataset pairing/windowing: [csi_to_sharp_doppler_dataset.py](../../src/wifi_doppler/data/csi_to_sharp_doppler_dataset.py)
 - Loss and metrics: [distillation.py](../../src/wifi_doppler/training/distillation.py)
 - SHARP target generation: [preprocess_sharp_pi.py](../../src/preprocessing/preprocess_sharp_pi.py)
 
-All three current architecture configs still use the
+The three architecture-comparison configs still use the
 `motion_weighted_wasserstein` objective analyzed below. They are reproducible
-architecture baselines, not corrected-loss configs.
+architecture baselines. The separate motion-aware config implements the
+corrected objective defined in the 2026-07-24 entry.
 
 ## Fixed Data Protocol
 
@@ -757,6 +759,170 @@ Do not move the full training pipeline to 242 carriers based on this result.
 The next capacity/generalization diagnostic is the same plain-MSE test on 64
 motion-stratified windows from four source recordings, followed by held-out
 windows from those same recordings.
+
+### Motion-aware objective v1
+
+**Question**
+
+How should the full-data objective emphasize narrow off-center motion without
+again rewarding a center-biased mean spectrum or producing broad false power?
+
+**Implementation/config**
+
+- Loss name: `motion_aware_mse`
+- Code: [distillation.py](../../src/wifi_doppler/training/distillation.py)
+- Training config: [pi_cross_domain_unet1d_spatial_head_motion_aware.yaml](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_aware.yaml)
+- Architecture and data protocol use the 30-carrier 1D U-Net with spatial 2D
+  output head.
+
+For predictions and targets `p,y` with shape
+`[batch, antenna, time, Doppler bin] = [B,A,T,100]`, define:
+
+```text
+floor f = 0.0630957344
+stationary bins C = {45, ..., 55}
+off-center bins O = {0, ..., 44} union {56, ..., 99}
+
+q[b,a,t,d] =
+    1[d in O] * clamp((y[b,a,t,d] - f) / (1 - f), 0, 1)
+```
+
+The loss is:
+
+```text
+L = 1.00 * L_full
+  + 0.25 * L_motion
+  + 0.25 * L_background
+  + 0.05 * L_wasserstein
+```
+
+with:
+
+```text
+L_full = mean over B,A,T,D of (p - y)^2
+
+L_motion =
+    sum over B,A,T,D of q * (p - y)^2
+    / sum over B,A,T,D of q
+
+L_background =
+    mean of relu(p - f) where y is equal to the floor
+```
+
+For Wasserstein, active off-center power is:
+
+```text
+p_active = relu(p - f) * 1[d in O]
+y_active = relu(y - f) * 1[d in O]
+```
+
+Each `[b,a,t]` active spectrum is normalized across the last dimension
+`D=100`. The first Wasserstein distance is the mean absolute difference
+between cumulative distributions along `dim=-1`, divided by `99`. Frame
+distances are weighted by `sum_d q[b,a,t,d]`, so frames with no target
+off-center power contribute zero.
+
+**Why full-map MSE remains**
+
+- Approximately 77-80% of target pixels equal the hard floor. Full MSE gives
+  every pixel a gradient, including negative predictions, missed center
+  structure, and values above the target range.
+- The previous composite loss applied only `0.05 * raw MSE`; it could report a
+  moderate loss while raw source-validation MSE reached `0.2749`.
+- The tiny overfit runs show that plain MSE and the full 2D model can reproduce
+  the selected maps. MSE is therefore retained as the global anchor, not
+  discarded as an unusable pointwise distance.
+
+**Why target-active bin weighting**
+
+- A frame-weighted MSE averaged across all 89 off-center bins would still
+  dilute narrow peaks with many floor bins.
+- `q` weights each target-active off-center bin directly. Exact-floor bins
+  receive zero motion weight, a weak target peak remains nonzero, and a peak
+  at `1` receives maximum weight.
+- There is no `0.2` training threshold. On sampled source-training frames,
+  23.1% had an off-center maximum above `0.2`, but peaks at or below `0.2`
+  still represented 10.3% of total continuous motion weight. A hard gate
+  could remove subtle motion without activity labels proving it was noise.
+- The `0.2` statistic may remain a diagnostic, but it does not alter
+  gradients.
+
+**Why coefficient 0.25 is motion-dominant**
+
+The coefficient cannot be interpreted without the term's reduction. On the
+constant train-mean predictor evaluated against sampled PI-4a target frames:
+
+| Component | Raw value | Weighted contribution |
+|---|---:|---:|
+| full-map MSE | 0.00559 | 0.00559 |
+| target-active off-center MSE | 0.09233 | 0.02308 |
+| background leakage | 0.01373 | 0.00343 |
+| motion-only Wasserstein | 0.09275 | 0.00464 |
+
+The weighted motion MSE is already about four times the full-map MSE. Relative
+to full MSE alone, the total gradient at an off-center target value of `0.2`,
+`0.5`, and `1.0` is approximately `3.7`, `9.6`, and `19.5` times larger.
+Using coefficient `1.0` would raise the strongest peak gradient to roughly 75
+times the full-MSE gradient and risk fitting source-specific target artifacts.
+
+**Why L1 background leakage**
+
+- The mask includes every location where the stored target equals the hard
+  floor, across both center and off-center bins.
+- `relu(p-f)` penalizes only predicted power above the floor. Full MSE still
+  pushes predictions below the floor back toward the correct floor value.
+- An L1 excess is intentional: another squared term would make broad,
+  low-amplitude haze cheap. The constant L1 gradient directly suppresses the
+  visual leakage observed in prior runs.
+
+**Why motion-only Wasserstein**
+
+- Wasserstein compares normalized off-center spectral shape and penalizes
+  moving power farther in Doppler more than moving it to an adjacent bin.
+- Center bins are zeroed but the distributions retain all 100 coordinates.
+  Concatenating left and right off-center bands would incorrectly make bins 44
+  and 56 adjacent and erase the excluded center-band distance.
+- Normalization removes amplitude, so Wasserstein cannot replace motion MSE.
+  Its coefficient remains `0.05`; amplitude and false mass are controlled by
+  the other terms.
+
+**Deliberate non-changes**
+
+- Predictions remain unconstrained. A scaled sigmoid would add saturation and
+  confound the loss ablation with a model-head change. Full MSE penalizes
+  values outside `[f,1]`, and negative predictions remain logged.
+- SmoothL1 is not used. Its linear high-error region weakened the incentive to
+  correct large missed peaks in the previous objective.
+- BatchNorm, architecture, selected carriers, batching, splits, and
+  normalization are unchanged so this run isolates the objective.
+
+**W&B logging**
+
+The trainer records total `loss`, the existing full-map `mse`, and:
+
+```text
+loss_full_map_mse
+loss_motion_mse
+loss_background_leakage
+loss_motion_wasserstein
+motion_mse
+background_leakage
+motion_wasserstein
+```
+
+The four `loss_*` values are weighted contributions and sum to `loss`. The
+three unprefixed auxiliary values expose their raw scales. They are logged for
+train batches and for train/source-validation/target-validation epochs.
+
+**Training command**
+
+```bash
+python scripts/train_csi_to_doppler.py \
+    --config configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_aware.yaml
+```
+
+No W&B run exists yet. Link it in the run index and this entry after training
+starts.
 
 ## Open Paper-Level Questions
 

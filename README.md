@@ -95,12 +95,13 @@ The chronological experiment record, linked W&B runs, negative results, and
 current hypotheses are maintained in
 [`docs/research/csi_to_doppler_log.md`](docs/research/csi_to_doppler_log.md).
 
-Architecture-specific training configs are provided for the legacy 1D U-Net,
-the 1D U-Net with a spatial 2D head, and the full 2D decoder:
+Reusable training configs are provided for the legacy 1D U-Net, the 1D U-Net
+with a spatial 2D head, and the full 2D decoder:
 
 - `pi_cross_domain_unet1d_legacy.yaml`
 - `pi_cross_domain_unet1d_spatial_head.yaml`
 - `pi_cross_domain_unet2d_decoder.yaml`
+- `pi_cross_domain_unet1d_spatial_head_motion_aware.yaml`
 
 Treat experiment configs as immutable. Copy one to a descriptively named file
 before changing architecture, input selection, loss, or dataset splits.
@@ -111,6 +112,13 @@ For example, train the full 2D decoder with:
 conda activate wifi-doppler-har
 python scripts/train_csi_to_doppler.py \
     --config configs/csi_to_doppler/pi_cross_domain_unet2d_decoder.yaml
+```
+
+Train the 1D U-Net with spatial 2D head and motion-aware objective using:
+
+```bash
+python scripts/train_csi_to_doppler.py \
+    --config configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_aware.yaml
 ```
 
 Configuration values can be overridden without editing the YAML:

@@ -80,9 +80,10 @@ def validate_config(config: dict[str, Any]) -> None:
     missing = required_splits - set(config["data"]["splits"])
     if missing:
         raise ValueError(f"Missing data splits: {sorted(missing)}")
-    if config["training"]["loss"] not in {"mse", "motion_weighted_wasserstein"}:
+    supported_losses = {"mse", "motion_weighted_wasserstein", "motion_aware_mse"}
+    if config["training"]["loss"] not in supported_losses:
         raise ValueError(
-            "training.loss must be mse or motion_weighted_wasserstein."
+            f"training.loss must be one of {sorted(supported_losses)}."
         )
     loss_options = config["training"].get("loss_options", {})
     if not isinstance(loss_options, dict):
@@ -98,6 +99,27 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"Loss options {nonnegative_options} must be non-negative.")
         if float(loss_options.get("smooth_l1_beta", 0.1)) <= 0:
             raise ValueError("training.loss_options.smooth_l1_beta must be positive.")
+    if config["training"]["loss"] == "motion_aware_mse":
+        nonnegative_weights = (
+            "motion_mse_weight",
+            "background_leakage_weight",
+            "wasserstein_weight",
+        )
+        if any(float(loss_options.get(key, 0)) < 0 for key in nonnegative_weights):
+            raise ValueError(f"Loss options {nonnegative_weights} must be non-negative.")
+        floor = float(loss_options.get("floor", 10**-1.2))
+        if not 0 <= floor < 1:
+            raise ValueError("training.loss_options.floor must be in [0, 1).")
+        center_half_width = loss_options.get("center_half_width", 5)
+        if (
+            not isinstance(center_half_width, int)
+            or isinstance(center_half_width, bool)
+            or not 0 <= center_half_width < config["model"]["output_doppler_bins"] // 2
+        ):
+            raise ValueError(
+                "training.loss_options.center_half_width must be an integer selecting "
+                "a proper subset of Doppler bins."
+            )
     early_stopping_metric = config["training"].get("early_stopping_metric", "mse")
     if early_stopping_metric not in {"loss", "mse"}:
         raise ValueError("training.early_stopping_metric must be loss or mse.")

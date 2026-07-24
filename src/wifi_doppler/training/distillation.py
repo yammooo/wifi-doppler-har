@@ -39,15 +39,125 @@ def distillation_loss(
     options: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     """Compute the configured student/teacher regression objective."""
+    return distillation_loss_components(
+        predictions,
+        targets,
+        name=name,
+        options=options,
+    )["loss"]
+
+
+def distillation_loss_components(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    name: str = "mse",
+    options: dict[str, Any] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Compute the objective and its separately loggable components."""
     if predictions.shape != targets.shape:
         raise ValueError(
             f"Prediction and target shapes differ: {tuple(predictions.shape)} != {tuple(targets.shape)}"
         )
     if name == "mse":
-        return F.mse_loss(predictions, targets)
+        loss = F.mse_loss(predictions, targets)
+        return {"loss": loss, "loss_full_map_mse": loss}
     if name == "motion_weighted_wasserstein":
-        return motion_weighted_wasserstein_loss(predictions, targets, **(options or {}))
+        return {
+            "loss": motion_weighted_wasserstein_loss(
+                predictions,
+                targets,
+                **(options or {}),
+            )
+        }
+    if name == "motion_aware_mse":
+        return motion_aware_mse_loss_components(
+            predictions,
+            targets,
+            **(options or {}),
+        )
     raise ValueError(f"Unknown distillation loss: {name!r}")
+
+
+def motion_aware_mse_loss_components(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    floor: float = 10**-1.2,
+    center_half_width: int = 5,
+    motion_mse_weight: float = 0.25,
+    background_leakage_weight: float = 0.25,
+    wasserstein_weight: float = 0.05,
+    eps: float = 1e-8,
+) -> dict[str, torch.Tensor]:
+    """Emphasize target-active off-center bins while suppressing false power."""
+    if predictions.ndim != 4:
+        raise ValueError(
+            "Expected predictions [batch, antenna, time, doppler_bin], "
+            f"got {tuple(predictions.shape)}"
+        )
+    if not 0 <= floor < 1:
+        raise ValueError("floor must be in [0, 1).")
+    if center_half_width < 0 or center_half_width >= predictions.shape[-1] // 2:
+        raise ValueError("center_half_width must select a proper subset of Doppler bins.")
+    if min(motion_mse_weight, background_leakage_weight, wasserstein_weight) < 0:
+        raise ValueError("Loss weights must be non-negative.")
+
+    predictions = predictions.float()
+    targets = targets.float()
+    num_bins = predictions.shape[-1]
+    center = num_bins // 2
+    off_center = torch.ones(num_bins, dtype=predictions.dtype, device=predictions.device)
+    off_center[center - center_half_width : center + center_half_width + 1] = 0
+
+    squared_error = (predictions - targets).square()
+    full_map_mse = squared_error.mean()
+
+    target_activity = ((targets - floor) / (1 - floor)).clamp(0, 1) * off_center
+    target_activity_sum = target_activity.sum()
+    motion_mse = (target_activity * squared_error).sum() / target_activity_sum.clamp_min(eps)
+
+    background = (targets <= floor + 1e-6).to(predictions.dtype)
+    background_leakage = (
+        background * (predictions - floor).clamp_min(0)
+    ).sum() / background.sum().clamp_min(1)
+
+    pred_active = (predictions - floor).clamp_min(0) * off_center
+    target_active = (targets - floor).clamp_min(0) * off_center
+    num_off_center = off_center.sum()
+    pred_distribution = (pred_active + eps * off_center) / (
+        pred_active.sum(dim=-1, keepdim=True) + eps * num_off_center
+    )
+    target_distribution = (target_active + eps * off_center) / (
+        target_active.sum(dim=-1, keepdim=True) + eps * num_off_center
+    )
+    frame_wasserstein = (
+        pred_distribution.cumsum(dim=-1) - target_distribution.cumsum(dim=-1)
+    ).abs().sum(dim=-1) / (num_bins - 1)
+    frame_motion_weight = target_activity.sum(dim=-1)
+    motion_wasserstein = (
+        frame_wasserstein * frame_motion_weight
+    ).sum() / frame_motion_weight.sum().clamp_min(eps)
+
+    weighted_motion_mse = motion_mse_weight * motion_mse
+    weighted_background_leakage = background_leakage_weight * background_leakage
+    weighted_motion_wasserstein = wasserstein_weight * motion_wasserstein
+    loss = (
+        full_map_mse
+        + weighted_motion_mse
+        + weighted_background_leakage
+        + weighted_motion_wasserstein
+    )
+    return {
+        "loss": loss,
+        "loss_full_map_mse": full_map_mse,
+        "loss_motion_mse": weighted_motion_mse,
+        "loss_background_leakage": weighted_background_leakage,
+        "loss_motion_wasserstein": weighted_motion_wasserstein,
+        "motion_mse": motion_mse,
+        "background_leakage": background_leakage,
+        "motion_wasserstein": motion_wasserstein,
+    }
 
 
 def motion_weighted_wasserstein_loss(
@@ -426,6 +536,7 @@ def run_distillation_epoch(
     num_batches = 0
     num_samples = 0
     objective_sum = 0.0
+    loss_component_sums: dict[str, torch.Tensor] = {}
     started_at = time.perf_counter()
 
     grad_context = torch.enable_grad if training else torch.inference_mode
@@ -441,12 +552,13 @@ def run_distillation_epoch(
                 optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
                 predictions = model(inputs)
-                loss = distillation_loss(
+                loss_components = distillation_loss_components(
                     predictions,
                     targets,
                     name=loss_name,
                     options=loss_options,
                 )
+                loss = loss_components["loss"]
             if not torch.isfinite(loss):
                 raise FloatingPointError(
                     f"Non-finite {loss_name} loss for batch beginning with {batch.filenames[0]}"
@@ -464,7 +576,13 @@ def run_distillation_epoch(
 
             accumulator.update(predictions, targets)
             if batch_callback is not None and global_step % batch_callback_every == 0:
-                batch_callback(global_step, {"loss": float(loss.detach().item())})
+                batch_callback(
+                    global_step,
+                    {
+                        name: float(value.detach().item())
+                        for name, value in loss_components.items()
+                    },
+                )
 
             remaining_examples = max_examples - len(examples)
             if remaining_examples > 0:
@@ -480,10 +598,25 @@ def run_distillation_epoch(
             num_batches += 1
             num_samples += inputs.shape[0]
             objective_sum += float(loss.detach().item()) * inputs.shape[0]
+            for name, value in loss_components.items():
+                if name == "loss":
+                    continue
+                batch_component = value.detach() * inputs.shape[0]
+                loss_component_sums[name] = (
+                    loss_component_sums[name] + batch_component
+                    if name in loss_component_sums
+                    else batch_component
+                )
 
     elapsed = time.perf_counter() - started_at
     metrics = accumulator.compute()
     metrics["loss"] = objective_sum / num_samples
+    metrics.update(
+        {
+            name: float(component_sum.item()) / num_samples
+            for name, component_sum in loss_component_sums.items()
+        }
+    )
     metrics["samples_per_second"] = num_samples / elapsed if elapsed > 0 else 0.0
     metrics["elapsed_seconds"] = elapsed
     return EpochResult(
