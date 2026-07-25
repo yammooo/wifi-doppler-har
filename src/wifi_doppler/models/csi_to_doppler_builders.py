@@ -7,6 +7,9 @@ import torch
 from wifi_doppler.models.csi_to_doppler import CsiToDopplerUNet1D
 from wifi_doppler.models.csi_to_doppler_2d import CsiToDopplerUNet2DDecoder
 from wifi_doppler.models.csi_to_doppler_2d_head import CsiToDopplerUNet1DSpatialHead
+from wifi_doppler.models.csi_to_doppler_shared_antenna import (
+    SharedAntennaCsiToDopplerUNet1DSpatialHead,
+)
 
 
 _ARCHITECTURES: dict[str, tuple[type[torch.nn.Module], str, str]] = {
@@ -24,6 +27,11 @@ _ARCHITECTURES: dict[str, tuple[type[torch.nn.Module], str, str]] = {
         CsiToDopplerUNet1DSpatialHead,
         "csi_to_doppler_unet1d_spatial_head_v1",
         "wifi_doppler.models.csi_to_doppler_2d_head.CsiToDopplerUNet1DSpatialHead",
+    ),
+    "unet1d_spatial_head_shared_antenna": (
+        SharedAntennaCsiToDopplerUNet1DSpatialHead,
+        "csi_to_doppler_unet1d_spatial_head_shared_antenna_v1",
+        "wifi_doppler.models.csi_to_doppler_shared_antenna.SharedAntennaCsiToDopplerUNet1DSpatialHead",
     ),
 }
 

@@ -32,6 +32,9 @@ from wifi_doppler.models.csi_to_doppler import CsiToDopplerUNet1D
 from wifi_doppler.models.csi_to_doppler_2d import CsiToDopplerUNet2DDecoder
 from wifi_doppler.models.csi_to_doppler_2d_head import CsiToDopplerUNet1DSpatialHead
 from wifi_doppler.models.csi_to_doppler_builders import build_csi_to_doppler_model
+from wifi_doppler.models.csi_to_doppler_shared_antenna import (
+    SharedAntennaCsiToDopplerUNet1DSpatialHead,
+)
 from wifi_doppler.training.distillation import (
     DistillationMetricAccumulator,
     count_recording_batches,
@@ -568,6 +571,44 @@ class CsiToDopplerModelTests(unittest.TestCase):
         self.assertTrue(any(isinstance(module, torch.nn.Conv2d) for module in model.decoder1.modules()))
         self.assertIsInstance(build_csi_to_doppler_model(common), CsiToDopplerUNet1D)
 
+    def test_shared_antenna_model_is_independent_and_permutation_equivariant(self) -> None:
+        model = build_csi_to_doppler_model(
+            {
+                "architecture": "unet1d_spatial_head_shared_antenna",
+                "num_antennas": 4,
+                "num_subcarriers": 3,
+                "input_parts": 2,
+                "output_doppler_bins": 12,
+                "output_time": 5,
+                "base_channels": 4,
+                "mid_channels": 6,
+                "bottleneck_channels": 8,
+                "head_channels": 3,
+                "head_coarse_bins": 3,
+            }
+        ).eval()
+        inputs = torch.randn(2, 4, 3, 7, 2)
+        permutation = torch.tensor([2, 0, 3, 1])
+
+        with torch.no_grad():
+            output = model(inputs)
+            separate_output = torch.cat(
+                [model(inputs[:, antenna : antenna + 1]) for antenna in range(4)],
+                dim=1,
+            )
+            permuted_output = model(inputs[:, permutation])
+            repeated_output = model(inputs[:, :1].expand(-1, 4, -1, -1, -1))
+
+        self.assertIsInstance(model, SharedAntennaCsiToDopplerUNet1DSpatialHead)
+        self.assertEqual(tuple(output.shape), (2, 4, 5, 12))
+        self.assertEqual(tuple(model(inputs[:, :1]).shape), (2, 1, 5, 12))
+        torch.testing.assert_close(output, separate_output)
+        torch.testing.assert_close(permuted_output, output[:, permutation])
+        torch.testing.assert_close(
+            repeated_output,
+            repeated_output[:, :1].expand_as(repeated_output),
+        )
+
     def test_spatial_model_config_validation(self) -> None:
         config = yaml.safe_load(
             (
@@ -595,6 +636,18 @@ class CsiToDopplerModelTests(unittest.TestCase):
         config["model"]["head_coarse_bins"] = config["model"]["output_doppler_bins"] + 1
         with self.assertRaisesRegex(ValueError, "head_coarse_bins"):
             validate_config(config)
+
+        shared_config = yaml.safe_load(
+            (
+                PROJECT_ROOT
+                / "configs"
+                / "csi_to_doppler"
+                / "pi_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        validate_config(shared_config)
+        self.assertEqual(shared_config["training"]["batch_size"], 64)
+        self.assertEqual(shared_config["training"]["loss_options"]["motion_mse_weight"], 0.25)
 
 
 class PairedDatasetTests(unittest.TestCase):
@@ -709,7 +762,7 @@ class PairedDatasetTests(unittest.TestCase):
                     },
                 },
                 "model": {
-                    "architecture": "unet1d_spatial_head",
+                    "architecture": "unet1d_spatial_head_shared_antenna",
                     "num_antennas": 4,
                     "num_subcarriers": 3,
                     "input_parts": 2,
@@ -773,10 +826,14 @@ class PairedDatasetTests(unittest.TestCase):
             self.assertTrue((run_dir / "training" / "final_test.json").exists())
             run_record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(run_record["status"], "completed")
-            self.assertEqual(run_record["model_key"], "csi_to_doppler_unet1d_spatial_head_v1")
+            self.assertEqual(
+                run_record["model_key"],
+                "csi_to_doppler_unet1d_spatial_head_shared_antenna_v1",
+            )
             self.assertEqual(
                 run_record["builder"],
-                "wifi_doppler.models.csi_to_doppler_2d_head.CsiToDopplerUNet1DSpatialHead",
+                "wifi_doppler.models.csi_to_doppler_shared_antenna."
+                "SharedAntennaCsiToDopplerUNet1DSpatialHead",
             )
 
             config["training"]["epochs"] = 2

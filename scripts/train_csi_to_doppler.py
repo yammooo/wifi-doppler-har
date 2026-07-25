@@ -137,10 +137,15 @@ def validate_config(config: dict[str, Any]) -> None:
     if config["model"]["output_time"] != config["data"]["doppler_window_size"]:
         raise ValueError("model.output_time must match data.doppler_window_size.")
     architecture = config["model"].get("architecture", "unet1d_legacy")
-    if architecture not in {"unet1d_legacy", "unet1d_spatial_head", "unet2d_decoder"}:
+    if architecture not in {
+        "unet1d_legacy",
+        "unet1d_spatial_head",
+        "unet1d_spatial_head_shared_antenna",
+        "unet2d_decoder",
+    }:
         raise ValueError(
             "model.architecture must be unet1d_legacy, unet1d_spatial_head, "
-            "or unet2d_decoder."
+            "unet1d_spatial_head_shared_antenna, or unet2d_decoder."
         )
     if architecture == "unet2d_decoder":
         decoder_channels = config["model"].get("decoder_channels")
@@ -159,7 +164,10 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(
                 "model.decoder_coarse_bins must be an integer between 1 and output_doppler_bins."
             )
-    if architecture == "unet1d_spatial_head":
+    if architecture in {
+        "unet1d_spatial_head",
+        "unet1d_spatial_head_shared_antenna",
+    }:
         head_channels = config["model"].get("head_channels")
         coarse_bins = config["model"].get("head_coarse_bins")
         if (

@@ -1044,6 +1044,80 @@ continuously with Doppler distance.
 
 No W&B run is linked yet.
 
+### Shared single-antenna architecture
+
+**Question**
+
+The existing model flattens all four antennas into the Conv1d channel axis and
+predicts all four Doppler maps jointly. Its first projection can therefore
+learn antenna-position-specific weights and every later feature can mix
+antennas. This permits cross-antenna shortcuts that may fit the source
+recordings but do not enforce the same raw-CSI-to-Doppler mapping for every
+receiver stream.
+
+**Implementation/config**
+
+- Architecture: `unet1d_spatial_head_shared_antenna`
+- Code:
+  [csi_to_doppler_shared_antenna.py](../../src/wifi_doppler/models/csi_to_doppler_shared_antenna.py)
+- Config:
+  [pi_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware.yaml](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware.yaml)
+- Trainable parameters: `3,047,265`, compared with `3,070,524` for the joint
+  spatial-head model.
+
+The data loader remains unchanged and emits:
+
+```text
+x: [B, 4, 30, T_raw, 2]
+y: [B, 4, 340, 100]
+```
+
+Inside the model only, input is reshaped to:
+
+```text
+[B * 4, 1, 30, T_raw, 2]
+```
+
+One `CsiToDopplerUNet1DSpatialHead` configured with `num_antennas=1` processes
+all antenna examples with shared parameters. Predictions are reshaped back to
+`[B,4,340,100]` before loss calculation, metrics, heatmaps, and checkpointing.
+The same model can accept `[B,1,30,T_raw,2]` for single-antenna inference.
+
+**Batching decision**
+
+- The configured window batch is reduced from `256` to `64`.
+- Flattening four antennas gives an effective network batch of `256`
+  single-antenna examples.
+- Each full batch still draws windows from eight recordings and contains every
+  physical antenna equally. BatchNorm therefore sees mixed recordings and
+  balanced antennas rather than four separate antenna-specific batches.
+- Every antenna-window pair is used exactly once per epoch. No random or
+  rotating antenna selection is added.
+- W&B throughput remains reported in recording windows per second, not
+  flattened antenna examples per second.
+
+The temporal encoder now runs independently four times per recording window,
+so its epoch compute is expected to approach four times the joint model's
+temporal-core compute. The first projection and output work do not increase by
+the same factor because their antenna/channel dimensions are correspondingly
+smaller. Actual runtime and memory must be measured on the RTX 2070.
+
+**Controlled comparison**
+
+The first run intentionally reuses the completed `tio9b4ad` protocol:
+
+```text
+30 fixed-uniform subcarriers
+rectangular center mask, bins 45-55
+motion MSE weight = 0.25
+background leakage weight = 0.25
+motion Wasserstein weight = 0.05
+```
+
+The unrun `motion_mse_weight=1.0` and smooth-center experiments are excluded,
+so any difference from `tio9b4ad` can be attributed primarily to antenna
+weight sharing and independent processing. No W&B run is linked yet.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
