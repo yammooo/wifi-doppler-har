@@ -110,6 +110,15 @@ def validate_config(config: dict[str, Any]) -> None:
         floor = float(loss_options.get("floor", 10**-1.2))
         if not 0 <= floor < 1:
             raise ValueError("training.loss_options.floor must be in [0, 1).")
+        center_taper_sigma_bins = loss_options.get("center_taper_sigma_bins")
+        if center_taper_sigma_bins is not None and (
+            isinstance(center_taper_sigma_bins, bool)
+            or not isinstance(center_taper_sigma_bins, (int, float))
+            or center_taper_sigma_bins <= 0
+        ):
+            raise ValueError(
+                "training.loss_options.center_taper_sigma_bins must be positive."
+            )
         center_half_width = loss_options.get("center_half_width", 5)
         if (
             not isinstance(center_half_width, int)

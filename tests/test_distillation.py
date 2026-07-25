@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import pickle
 import random
@@ -304,6 +305,32 @@ class DistillationTests(unittest.TestCase):
         self.assertGreater(float(motion_mse.detach()), 0)
         self.assertLess(float(prediction.grad[..., 0]), 0)
 
+    def test_motion_aware_mse_smoothly_tapers_center_weight(self) -> None:
+        prediction = torch.zeros((1, 1, 1, 7))
+        target = torch.zeros_like(prediction)
+        target[..., 4:6] = 1
+        prediction[..., 5] = 1
+
+        motion_mse = distillation_loss_components(
+            prediction,
+            target,
+            name="motion_aware_mse",
+            options={
+                "floor": 0,
+                "center_taper_sigma_bins": 1,
+                "background_leakage_weight": 0,
+                "wasserstein_weight": 0,
+            },
+        )["motion_mse"]
+
+        weight_1 = 1 - math.exp(-0.5)
+        weight_2 = 1 - math.exp(-2)
+        self.assertAlmostEqual(
+            float(motion_mse),
+            weight_1 / (weight_1 + weight_2),
+            places=6,
+        )
+
     def test_recording_iterator_loads_once_and_covers_all_windows(self) -> None:
         dataset = FakeDataset()
         batches = list(iter_recording_batches(dataset, batch_size=1, shuffle=False, seed=4))
@@ -409,6 +436,11 @@ class DistillationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "center_half_width"):
             validate_config(config)
         config["training"]["loss_options"]["center_half_width"] = 5
+
+        config["training"]["loss_options"]["center_taper_sigma_bins"] = 0
+        with self.assertRaisesRegex(ValueError, "center_taper_sigma_bins"):
+            validate_config(config)
+        config["training"]["loss_options"].pop("center_taper_sigma_bins")
 
         config["training"]["loss_options"]["motion_mse_weight"] = -1
         with self.assertRaisesRegex(ValueError, "non-negative"):

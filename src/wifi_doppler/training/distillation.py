@@ -85,6 +85,7 @@ def motion_aware_mse_loss_components(
     *,
     floor: float = 10**-1.2,
     center_half_width: int = 5,
+    center_taper_sigma_bins: float | None = None,
     motion_mse_weight: float = 0.25,
     background_leakage_weight: float = 0.25,
     wasserstein_weight: float = 0.05,
@@ -98,8 +99,11 @@ def motion_aware_mse_loss_components(
         )
     if not 0 <= floor < 1:
         raise ValueError("floor must be in [0, 1).")
-    if center_half_width < 0 or center_half_width >= predictions.shape[-1] // 2:
-        raise ValueError("center_half_width must select a proper subset of Doppler bins.")
+    if center_taper_sigma_bins is None:
+        if center_half_width < 0 or center_half_width >= predictions.shape[-1] // 2:
+            raise ValueError("center_half_width must select a proper subset of Doppler bins.")
+    elif center_taper_sigma_bins <= 0:
+        raise ValueError("center_taper_sigma_bins must be positive.")
     if min(motion_mse_weight, background_leakage_weight, wasserstein_weight) < 0:
         raise ValueError("Loss weights must be non-negative.")
 
@@ -107,13 +111,29 @@ def motion_aware_mse_loss_components(
     targets = targets.float()
     num_bins = predictions.shape[-1]
     center = num_bins // 2
-    off_center = torch.ones(num_bins, dtype=predictions.dtype, device=predictions.device)
-    off_center[center - center_half_width : center + center_half_width + 1] = 0
+    if center_taper_sigma_bins is None:
+        motion_bin_weight = torch.ones(
+            num_bins,
+            dtype=predictions.dtype,
+            device=predictions.device,
+        )
+        motion_bin_weight[center - center_half_width : center + center_half_width + 1] = 0
+    else:
+        distance = torch.arange(
+            num_bins,
+            dtype=predictions.dtype,
+            device=predictions.device,
+        ) - center
+        motion_bin_weight = 1 - torch.exp(
+            -0.5 * (distance / center_taper_sigma_bins).square()
+        )
 
     squared_error = (predictions - targets).square()
     full_map_mse = squared_error.mean()
 
-    target_activity = ((targets - floor) / (1 - floor)).clamp(0, 1) * off_center
+    target_activity = (
+        ((targets - floor) / (1 - floor)).clamp(0, 1) * motion_bin_weight
+    )
     target_activity_sum = target_activity.sum()
     motion_mse = (target_activity * squared_error).sum() / target_activity_sum.clamp_min(eps)
 
@@ -122,14 +142,14 @@ def motion_aware_mse_loss_components(
         background * (predictions - floor).clamp_min(0)
     ).sum() / background.sum().clamp_min(1)
 
-    pred_active = (predictions - floor).clamp_min(0) * off_center
-    target_active = (targets - floor).clamp_min(0) * off_center
-    num_off_center = off_center.sum()
-    pred_distribution = (pred_active + eps * off_center) / (
-        pred_active.sum(dim=-1, keepdim=True) + eps * num_off_center
+    pred_active = (predictions - floor).clamp_min(0) * motion_bin_weight
+    target_active = (targets - floor).clamp_min(0) * motion_bin_weight
+    motion_bin_weight_sum = motion_bin_weight.sum()
+    pred_distribution = (pred_active + eps * motion_bin_weight) / (
+        pred_active.sum(dim=-1, keepdim=True) + eps * motion_bin_weight_sum
     )
-    target_distribution = (target_active + eps * off_center) / (
-        target_active.sum(dim=-1, keepdim=True) + eps * num_off_center
+    target_distribution = (target_active + eps * motion_bin_weight) / (
+        target_active.sum(dim=-1, keepdim=True) + eps * motion_bin_weight_sum
     )
     frame_wasserstein = (
         pred_distribution.cumsum(dim=-1) - target_distribution.cumsum(dim=-1)

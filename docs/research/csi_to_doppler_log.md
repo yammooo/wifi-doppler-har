@@ -987,6 +987,63 @@ allocation already reached 6.51 GB on an 8 GB GPU.
 - Treat low utilization during validation, plotting, and artifact upload as
   expected epoch-end overhead rather than model-training starvation.
 
+### Smooth center taper experiment
+
+**Question**
+
+The first motion-aware loss defines bins 45-55 as a rectangular stationary
+region. Real no-motion Doppler ridges have tapered skirts rather than sharp
+edges. The hard mask therefore gives bin 55 zero motion gradient from the
+motion-specific terms and bin 56 full motion gradient, and can discard genuine
+slow motion close to the center.
+
+**Implementation/config**
+
+- Code: [distillation.py](../../src/wifi_doppler/training/distillation.py)
+- Config:
+  [pi_cross_domain_unet1d_spatial_head_motion_mse_1_smooth_center.yaml](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_mse_1_smooth_center.yaml)
+- Input and output remain `[B,4,30,T_raw,2]` and `[B,4,340,100]`.
+- Motion MSE weight is `1.0`; all other loss coefficients and training settings
+  match the 30-carrier motion-aware experiment.
+
+For Doppler-bin index `d` along `dim=-1` and center bin `c=50`, the smooth
+motion weight is:
+
+```text
+w[d] = 1 - exp(-0.5 * ((d - c) / sigma)^2)
+sigma = 5 bins
+```
+
+This gives weight `0` at bin 50, approximately `0.02` at +/-1 bin, `0.39` at
++/-5 bins, `0.86` at +/-10 bins, and approaches `1` farther away. Target
+activity becomes:
+
+```text
+q[b,a,t,d] =
+    w[d] * clamp((y[b,a,t,d] - floor) / (1 - floor), 0, 1)
+```
+
+The same `w[d]` multiplies prediction and target active power before
+normalization and `cumsum(dim=-1)` in the Wasserstein term. Full-map MSE and
+background leakage remain unmasked. Thus near-center errors still receive
+their ordinary full-map gradient, while motion-specific emphasis increases
+continuously with Doppler distance.
+
+**Why this version**
+
+- It removes the arbitrary 0-to-1 jump at bins 55/56.
+- It can retain weak, slow motion near the stationary ridge without assigning
+  the high-energy center bin full motion weight.
+- A Gaussian-complement taper is one parameter and is easy to interpret.
+- It does not claim to model the exact stationary spectrum, which may vary by
+  antenna, recording, and environment. A learned or target-adaptive stationary
+  profile should wait until reliable no-motion labels or calibration windows
+  are available.
+- Existing configs retain the rectangular mask so completed runs remain
+  reproducible.
+
+No W&B run is linked yet.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
