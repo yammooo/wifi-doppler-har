@@ -466,6 +466,7 @@ class DistillationTests(unittest.TestCase):
             amp_enabled=False,
             loss_name="motion_aware_mse",
             loss_options={"floor": 0, "center_half_width": 1},
+            max_examples=2,
             batch_callback=lambda step, metrics: callback_steps.append((step, metrics)),
             batch_callback_every=2,
         )
@@ -477,6 +478,11 @@ class DistillationTests(unittest.TestCase):
         self.assertIn("loss_motion_mse", result.metrics)
         self.assertIn("loss_background_leakage", result.metrics)
         self.assertIn("loss_motion_wasserstein", result.metrics)
+        self.assertEqual(len(result.examples), 2)
+        self.assertEqual(
+            [set(example) for example in result.examples],
+            [{"filename", "prediction", "target"}] * 2,
+        )
         self.assertEqual([step for step, _ in callback_steps], [2])
 
     def test_checkpoint_restores_training_and_rng_state(self) -> None:

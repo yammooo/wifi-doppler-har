@@ -586,6 +586,23 @@ def main() -> None:
             cuda_prefetch=bool(config["training"].get("cuda_prefetch", True)),
         )
 
+    train_reference_batch = None
+    if wandb_run is not None and max_examples > 0:
+        reference_batches = iter_recording_batches(
+            datasets["train"],
+            batch_size=max_examples,
+            shuffle=True,
+            seed=seed,
+            recordings_per_batch=min(
+                max_examples,
+                int(config["training"].get("recordings_per_batch", 1)),
+            ),
+        )
+        try:
+            train_reference_batch = next(reference_batches)
+        finally:
+            reference_batches.close()
+
     try:
         for epoch in range(start_epoch, int(config["training"]["epochs"]) + 1):
             if device.type == "cuda":
@@ -609,6 +626,19 @@ def main() -> None:
                 batch_callback_every=log_every,
             )
             global_step = train_result.global_step
+
+            train_reference_result = None
+            if train_reference_batch is not None:
+                train_reference_result = run_distillation_epoch(
+                    model,
+                    iter((train_reference_batch,)),
+                    device=device,
+                    amp_enabled=amp_enabled,
+                    loss_name=config["training"]["loss"],
+                    loss_options=loss_options,
+                    global_step=global_step,
+                    max_examples=max_examples,
+                )
 
             evaluations = {}
             for split_name in ("source_val", "target_val"):
@@ -682,6 +712,13 @@ def main() -> None:
                 logged["system/gpu_peak_memory_bytes"] = epoch_record["gpu_peak_memory_bytes"]
             if wandb_run is not None:
                 wandb_run.log(logged)
+                if train_reference_result is not None:
+                    log_examples(
+                        wandb_run,
+                        "train_reference",
+                        train_reference_result.examples,
+                        global_step,
+                    )
                 log_examples(wandb_run, "source_val", evaluations["source_val"].examples, global_step)
                 log_examples(wandb_run, "target_val", evaluations["target_val"].examples, global_step)
                 log_model_artifact(

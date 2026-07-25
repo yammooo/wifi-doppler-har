@@ -1118,6 +1118,33 @@ The unrun `motion_mse_weight=1.0` and smooth-center experiments are excluded,
 so any difference from `tio9b4ad` can be attributed primarily to antenna
 weight sharing and independent processing. No W&B run is linked yet.
 
+### Fixed training-reference images
+
+Training previously logged scalar metrics but retained heatmaps only for
+source and target validation. Capturing examples from the shuffled
+gradient-enabled training pass would change filenames every epoch and would
+show predictions made with training-mode BatchNorm, so those images would not
+support a stable longitudinal comparison.
+
+The trainer now selects `training.validation_examples` fixed windows from the
+training split once using the run seed and mixed-recording iterator. After
+each epoch it evaluates only that small batch in inference mode and logs the
+same target, prediction, and absolute-error heatmaps under:
+
+```text
+train_reference/examples
+```
+
+The reference pass does not update weights, alter training metrics, or traverse
+the full training set. With the default two examples, its cost is one
+two-window inference pass per epoch. Together with source and target
+validation images, this separates failure modes:
+
+- poor training references indicate optimization, loss, or model limitations;
+- good training references but poor source validation indicate source
+  generalization or overfitting;
+- good source validation but poor target validation indicates domain shift.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
