@@ -91,6 +91,22 @@ The converter preserves all 242 cleaned CSI subcarriers and direct float32
 Doppler targets under `data/csi_doppler_memmap`. Conversion is resumable: files
 already completed are skipped unless `--overwrite` is provided.
 
+To append the AR recordings that have matching Doppler folders to an existing
+PI memmap:
+
+```bash
+python scripts/convert_csi_doppler_memmap.py \
+    --raw-root data/CSI-80Mhz \
+    --doppler-root data/doppler_traces \
+    --output-root data/csi_doppler_memmap \
+    --scenarios S1a S1b S1c S2a S3a S4a S5a S6a S7a \
+    --append
+```
+
+Append mode preserves existing manifest entries and records each source root.
+The prepared loader continues to filter the combined manifest by configured
+scenario.
+
 The chronological experiment record, linked W&B runs, negative results, and
 current hypotheses are maintained in
 [`docs/research/csi_to_doppler_log.md`](docs/research/csi_to_doppler_log.md).
@@ -105,6 +121,7 @@ decoder:
 - `pi_cross_domain_unet1d_spatial_head_motion_aware.yaml`
 - `pi_cross_domain_unet1d_spatial_head_motion_aware_full_subcarriers.yaml`
 - `pi_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware.yaml`
+- `pi_ar_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware_full_subcarriers.yaml`
 
 Treat experiment configs as immutable. Copy one to a descriptively named file
 before changing architecture, input selection, loss, or dataset splits.

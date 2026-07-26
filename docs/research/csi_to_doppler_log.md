@@ -1145,6 +1145,70 @@ validation images, this separates failure modes:
   generalization or overfitting;
 - good source validation but poor target validation indicates domain shift.
 
+### Combined AR and PI scale experiment
+
+**Dataset decision**
+
+Use every AR Doppler scenario with a confirmed direct raw-directory mapping:
+
+```text
+S1a S1b S1c S2a S3a S4a S5a S6a S7a
+```
+
+These map to `AR-1a`, `AR-1b`, `AR-1c`, `AR-2a`, `AR-3a`, `AR-4a`,
+`AR-5a`, `AR-6a`, and `AR-7a`. `S2b`, `S4b`, and `S6b` are excluded because
+the current mapping would require raw directories `AR-2b`, `AR-4b`, and
+`AR-6b`, which are absent from the available raw dataset. Extra raw AR
+directories without Doppler counterparts are also excluded.
+
+The protocol is:
+
+```text
+train:      paired AR domains + PI-1a/2a/3a, 0-60%
+source val: paired AR domains + PI-1a/2a/3a, 60-80%
+target val: PI-4a, 60-80%
+target test: PI-4a, 80-100%
+```
+
+PI-4a remains completely excluded from optimization. The source-validation
+metric is an aggregate over AR and PI source domains; separate domain metrics
+can be added later if this aggregate hides a meaningful discrepancy.
+
+**Prepared storage**
+
+The existing memmap contains PI recordings. Rebuilding those files is
+unnecessary. The converter now supports explicit manifest-preserving append:
+
+```bash
+python scripts/convert_csi_doppler_memmap.py \
+    --raw-root data/CSI-80Mhz \
+    --doppler-root data/doppler_traces \
+    --output-root data/csi_doppler_memmap \
+    --scenarios S1a S1b S1c S2a S3a S4a S5a S6a S7a \
+    --append
+```
+
+Converted AR arrays are added under their canonical `S*` scenario names. The
+manifest retains all PI entries and records both source roots. Conversion is
+resumable and the manifest is replaced atomically only after all requested
+recordings finish.
+
+**Training config**
+
+[pi_ar_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware_full_subcarriers.yaml](../../configs/csi_to_doppler/pi_ar_cross_domain_unet1d_spatial_head_shared_antenna_motion_aware_full_subcarriers.yaml)
+uses:
+
+```text
+shared single-antenna 1D U-Net with spatial head
+all 242 cleaned subcarriers
+window batch 64, effective antenna batch 256
+motion-aware objective with hard center mask and motion weight 0.25
+```
+
+This is a scale experiment rather than a one-variable ablation because both
+the source-domain set and carrier count exceed `tio9b4ad`. No W&B run is
+linked yet.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier

@@ -717,6 +717,17 @@ class PairedDatasetTests(unittest.TestCase):
                     with (doppler_dir / f"PI1a_{person}_stream_{antenna}.txt").open("wb") as stream:
                         pickle.dump(target, stream)
 
+            ar_raw_dir = root / "raw" / "AR-1a"
+            ar_doppler_dir = root / "doppler_ar" / "S1a"
+            ar_raw_dir.mkdir()
+            ar_doppler_dir.mkdir(parents=True)
+            ar_csi = (packet_values + subcarrier_values + 20).astype(np.complex64) * (1 + 1j)
+            sio.savemat(ar_raw_dir / "AR1a_W.mat", {"csi_buff": ar_csi})
+            for antenna in range(4):
+                target = np.full((40, 100), 0.5 + 0.1 * antenna, dtype=np.float32)
+                with (ar_doppler_dir / f"S1a_W_stream_{antenna}.txt").open("wb") as stream:
+                    pickle.dump(target, stream)
+
             prepared_root = root / "prepared"
             converted = subprocess.run(
                 [
@@ -740,6 +751,35 @@ class PairedDatasetTests(unittest.TestCase):
             )
             self.assertEqual(converted.returncode, 0, msg=converted.stdout + converted.stderr)
             self.assertTrue((prepared_root / "manifest.json").is_file())
+
+            appended = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "convert_csi_doppler_memmap.py"),
+                    "--project-root",
+                    str(PROJECT_ROOT),
+                    "--raw-root",
+                    str(root / "raw"),
+                    "--doppler-root",
+                    str(root / "doppler_ar"),
+                    "--output-root",
+                    str(prepared_root),
+                    "--scenarios",
+                    "S1a",
+                    "--append",
+                ],
+                cwd=PROJECT_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(appended.returncode, 0, msg=appended.stdout + appended.stderr)
+            manifest = json.loads((prepared_root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {item["scenario"] for item in manifest["recordings"]},
+                {"PI-1a", "S1a"},
+            )
+            self.assertEqual(len(manifest["sources"]), 2)
 
             config = {
                 "run": {"id": "smoke", "output_root": str(root / "runs"), "seed": 0},

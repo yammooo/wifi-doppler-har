@@ -30,6 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=Path("data/csi_doppler_memmap"))
     parser.add_argument("--scenarios", nargs="+", default=list(DEFAULT_SCENARIOS))
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Preserve recordings in an existing output manifest and add these scenarios.",
+    )
     return parser.parse_args()
 
 
@@ -107,7 +112,32 @@ def main() -> None:
     output_root = resolve_path(project_root, args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    recordings = []
+    manifest_path = output_root / "manifest.json"
+    previous_manifest = None
+    recordings_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    sources: list[dict[str, Any]] = []
+    if args.append:
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Cannot append without an existing manifest: {manifest_path}")
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if previous_manifest.get("format_version") != PREPARED_FORMAT_VERSION:
+            raise ValueError(
+                f"Cannot append to prepared format {previous_manifest.get('format_version')!r}; "
+                f"expected {PREPARED_FORMAT_VERSION}."
+            )
+        for item in previous_manifest.get("recordings", []):
+            key = (item["scenario"], item["label"], item["repetition"])
+            recordings_by_key[key] = item
+        sources = list(previous_manifest.get("sources", []))
+        if not sources:
+            sources.append(
+                {
+                    "raw_root": previous_manifest.get("raw_root"),
+                    "doppler_root": previous_manifest.get("doppler_root"),
+                    "scenarios": sorted({item["scenario"] for item in recordings_by_key.values()}),
+                }
+            )
+
     for scenario in args.scenarios:
         dataset = CsiToSharpDopplerDataset(
             raw_root=raw_root,
@@ -123,21 +153,42 @@ def main() -> None:
         )
         try:
             for recording in dataset.traces:
-                recordings.append(convert_recording(recording, output_root, overwrite=args.overwrite))
+                item = convert_recording(recording, output_root, overwrite=args.overwrite)
+                key = (item["scenario"], item["label"], item["repetition"])
+                recordings_by_key[key] = item
         finally:
             dataset.clear_cache()
 
-    manifest = {
-        "format_version": PREPARED_FORMAT_VERSION,
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    source = {
         "raw_root": str(raw_root),
         "doppler_root": str(doppler_root),
-        "recordings": sorted(
-            recordings,
-            key=lambda item: (item["scenario"], item["label"], item["repetition"]),
-        ),
+        "scenarios": sorted(args.scenarios),
     }
-    save_json_atomic(output_root / "manifest.json", manifest)
+    if source not in sources:
+        sources.append(source)
+    recordings = sorted(
+        recordings_by_key.values(),
+        key=lambda item: (item["scenario"], item["label"], item["repetition"]),
+    )
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest = {
+        "format_version": PREPARED_FORMAT_VERSION,
+        "created_at": previous_manifest.get("created_at", now) if previous_manifest else now,
+        "updated_at": now,
+        "raw_root": (
+            previous_manifest.get("raw_root", str(raw_root))
+            if previous_manifest
+            else str(raw_root)
+        ),
+        "doppler_root": (
+            previous_manifest.get("doppler_root", str(doppler_root))
+            if previous_manifest
+            else str(doppler_root)
+        ),
+        "sources": sources,
+        "recordings": recordings,
+    }
+    save_json_atomic(manifest_path, manifest)
     total_gib = sum(
         np.prod(item["raw_shape"]) * np.dtype(item["raw_dtype"]).itemsize
         + np.prod(item["doppler_shape"]) * np.dtype(item["doppler_dtype"]).itemsize
