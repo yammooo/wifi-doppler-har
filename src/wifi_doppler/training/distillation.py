@@ -399,6 +399,27 @@ def iter_recording_batches(
                     x_complex = raw[:, selected_subcarriers, raw_start:raw_end]
                     x = np.stack((x_complex.real, x_complex.imag), axis=-1).astype(np.float32, copy=False)
                     y = doppler[:, window.start:window.end].astype(np.float32, copy=False)
+                    expected_input_shape = (
+                        doppler.shape[0],
+                        len(selected_subcarriers),
+                        raw_end - raw_start,
+                        2,
+                    )
+                    expected_target_shape = (
+                        doppler.shape[0],
+                        window.end - window.start,
+                        doppler.shape[-1],
+                    )
+                    if x.shape != expected_input_shape or y.shape != expected_target_shape:
+                        raise ValueError(
+                            f"Incompatible CSI/Doppler window for {recording.filename_stem}: "
+                            f"input shape {x.shape}, expected {expected_input_shape}; "
+                            f"target shape {y.shape}, expected {expected_target_shape}; "
+                            f"raw backing shape {raw.shape}, Doppler backing shape {doppler.shape}; "
+                            f"raw bounds [{raw_start}, {raw_end}), "
+                            f"Doppler bounds [{window.start}, {window.end}). "
+                            "The paired recording does not contain the configured aligned window."
+                        )
                     if not np.isfinite(x).all() or not np.isfinite(y).all():
                         raise ValueError(
                             f"Non-finite CSI/Doppler values in {recording.filename_stem} "

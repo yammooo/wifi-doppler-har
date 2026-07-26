@@ -401,6 +401,16 @@ class DistillationTests(unittest.TestCase):
         self.assertEqual(order(8), order(8))
         self.assertNotEqual(order(8), order(9))
 
+    def test_recording_iterator_reports_misaligned_recording(self) -> None:
+        dataset = FakeDataset()
+        dataset.traces[0].raw = dataset.traces[0].raw[..., :2]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"recording_a.*input shape.*raw backing shape.*raw bounds",
+        ):
+            list(iter_recording_batches(dataset, batch_size=2, shuffle=False, seed=0))
+
     def test_mixed_recording_batches_require_memmap_storage(self) -> None:
         config = yaml.safe_load(
             (
