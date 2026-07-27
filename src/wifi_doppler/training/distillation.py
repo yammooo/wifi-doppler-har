@@ -340,6 +340,13 @@ def iter_recording_batches(
     for base_idx, window in enumerate(dataset.window_indexes):
         items = by_recording.setdefault(window.recording_idx, [])
         items.extend((base_idx, view_idx) for view_idx in range(len(dataset.subcarrier_views)))
+    subcarrier_selectors: list[slice | np.ndarray] = []
+    for selected in dataset.subcarrier_views:
+        start = int(selected[0])
+        if np.array_equal(selected, np.arange(start, start + len(selected))):
+            subcarrier_selectors.append(slice(start, start + len(selected)))
+        else:
+            subcarrier_selectors.append(selected)
 
     rng = np.random.default_rng(seed)
     recording_order = np.asarray(sorted(by_recording), dtype=np.int64)
@@ -404,7 +411,7 @@ def iter_recording_batches(
                     selected_subcarriers = dataset.subcarrier_views[view_idx]
                     raw_start, raw_end = dataset.raw_bounds_for_doppler_window(window.start, window.end)
 
-                    x_complex = raw[:, selected_subcarriers, raw_start:raw_end]
+                    x_complex = raw[:, subcarrier_selectors[view_idx], raw_start:raw_end]
                     y = doppler[:, window.start:window.end].astype(np.float32, copy=False)
                     expected_input_shape = (
                         doppler.shape[0],

@@ -1470,6 +1470,53 @@ capacity, was already the tighter resource. The next run should compare epoch
 throughput, GPU utilization, and `data_wait_fraction` before considering
 multiple producer workers or a larger batch.
 
+**First optimized run**
+
+[W&B `6s1lm3dy`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/6s1lm3dy)
+tested preallocated batches, chunk-local shuffling, and mixed validation pools.
+It did not improve the first comparable 1,230 seconds of training:
+
+```text
+                         ehotc8fp    6s1lm3dy
+mean GPU utilization       34.0%       30.1%
+step 1480 runtime        1,280 s     1,358 s
+mean process RSS          2.26 GB     3.55 GB
+disk bytes read            82 GB       95 GB
+```
+
+The run still alternated between fast 200-250 windows/s intervals and
+20-40-second stalls. Inspection found that the full `0..241` subcarrier view
+was still supplied to NumPy as an integer array. This invokes advanced
+indexing and creates an additional complex array for every window before the
+preallocated batch is filled. On a local prepared PI memmap, filling 100
+full-carrier windows took `0.344 s` with advanced indexing and `0.030 s` with
+the equivalent basic slice, approximately `11x` faster for that operation.
+
+The iterator now detects contiguous subcarrier views once and uses a basic
+slice. Sparse 30-carrier views retain indexed selection. This change preserves
+sample values and order and passed the full 22-test distillation suite. It must
+be measured in a new run; adding producer workers before removing this
+unnecessary copy is not justified.
+
+### 2026-07-27: Smaller shared-antenna capacity ablation prepared
+
+Config:
+[`ar_pc_pi_cross_domain_unet1d_spatial_head_shared_antenna_small_motion_aware_full_subcarriers.yaml`](../../configs/csi_to_doppler/ar_pc_pi_cross_domain_unet1d_spatial_head_shared_antenna_small_motion_aware_full_subcarriers.yaml)
+
+The temporal channel widths are halved from `128/192/256` to `64/96/128`,
+and the spatial-head width is halved from `8` to `4`. All data, split, loss,
+optimizer, batch, and training settings remain identical to the full-width
+AR+PC+PI configuration. Parameter count falls from `3,101,537` to `792,609`
+(`25.6%`), while receptive field and output geometry remain unchanged.
+
+This tests whether the full-width model's capacity contributes to a persistent
+train/validation gap. A smaller model is expected to train faster and may
+generalize better if that gap is genuine variance. It will not fix domain
+shift, target noise, missing input information, or a loss whose easiest
+solution is an averaged central spectrum. The run must therefore be judged by
+both train-versus-validation behavior and motion-peak heatmaps. No W&B run is
+linked yet because this entry records the experiment before execution.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
