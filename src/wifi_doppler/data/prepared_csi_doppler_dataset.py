@@ -97,8 +97,8 @@ class PreparedCsiToSharpDopplerDataset(CsiToSharpDopplerDataset):
         for item in manifest.get("recordings", []):
             if item["scenario"] not in self.scenarios:
                 continue
-            raw_path = self.prepared_root / item["raw_path"]
-            doppler_path = self.prepared_root / item["doppler_path"]
+            raw_path = self.prepared_root / item["raw_path"].replace("\\", "/")
+            doppler_path = self.prepared_root / item["doppler_path"].replace("\\", "/")
             if not raw_path.is_file() or not doppler_path.is_file():
                 raise FileNotFoundError(f"Prepared files are missing for {item['filename_stem']}")
             traces.append(

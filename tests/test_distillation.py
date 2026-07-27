@@ -27,6 +27,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from wifi_doppler.data.csi_to_sharp_doppler_dataset import CsiToSharpDopplerDataset
+from wifi_doppler.data.prepared_csi_doppler_dataset import PreparedCsiToSharpDopplerDataset
 from wifi_doppler.data.windowing import WindowIndex
 from wifi_doppler.models.csi_to_doppler import CsiToDopplerUNet1D
 from wifi_doppler.models.csi_to_doppler_2d import CsiToDopplerUNet2DDecoder
@@ -733,6 +734,51 @@ class CsiToDopplerModelTests(unittest.TestCase):
 
 
 class PairedDatasetTests(unittest.TestCase):
+    def test_prepared_manifest_accepts_windows_paths_on_linux(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            recording_dir = root / "AR-1a" / "AR-1a_C"
+            recording_dir.mkdir(parents=True)
+            np.save(recording_dir / "raw.npy", np.zeros((4, 3, 4), dtype=np.complex64))
+            np.save(recording_dir / "doppler.npy", np.zeros((4, 4, 5), dtype=np.float32))
+            (root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "format_version": 1,
+                        "recordings": [
+                            {
+                                "filename_stem": "AR-1a_C",
+                                "scenario": "AR-1a",
+                                "label": "C",
+                                "repetition": "",
+                                "raw_path": r"AR-1a\AR-1a_C\raw.npy",
+                                "doppler_path": r"AR-1a\AR-1a_C\doppler.npy",
+                                "raw_shape": [4, 3, 4],
+                                "doppler_shape": [4, 4, 5],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            dataset = PreparedCsiToSharpDopplerDataset(
+                prepared_root=root,
+                scenarios=("AR-1a",),
+                split=(0.0, 1.0),
+                doppler_window_size=1,
+                window_stride=1,
+                split_guard=0,
+                doppler_start=0,
+                doppler_sample_length=1,
+                num_subcarriers=3,
+                target_transform="none",
+            )
+
+            self.assertEqual(len(dataset.traces), 1)
+            self.assertEqual(dataset.traces[0].load_raw().shape, (4, 3, 4))
+            self.assertEqual(dataset.traces[0].load_doppler().shape, (4, 4, 5))
+
     def test_mat_pickle_pairing_alignment_and_direct_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
