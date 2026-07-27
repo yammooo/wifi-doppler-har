@@ -1571,6 +1571,42 @@ exact tensors for shuffled mixed-recording batches, deterministic ordering,
 single-slab read counts, config validation, checkpoint resume, and the CPU CLI
 smoke test.
 
+### 2026-07-27: RTX 4090 first-epoch profile and launch synchronization
+
+[W&B `kbjjrx1c`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/kbjjrx1c)
+uses the 792,609-parameter small shared-antenna model on an RTX 4090 with all
+242 subcarriers, window batch size 448, eight recordings per pool, four batch
+preparation workers, and two prefetched host batches. Epoch 1 contained
+121,629 windows in 291 batches and took 557.81 seconds, or 218.05 windows/s.
+Peak allocated GPU memory was 12.30 GB. The full epoch, including source and
+target validation, took approximately 766 seconds.
+
+Measured training data wait was only 7.18 seconds, or 1.29% of training time.
+This rejects the earlier hypothesis that the optimized iterator is still the
+main cause of the 4090's low sampled utilization. The training loop instead
+forced a device synchronization every batch through both
+`torch.isfinite(loss)` in Python control flow and `loss.item()` for objective
+accumulation. Those barriers prevented CUDA work from being queued across
+steps and amplified Python and kernel-launch gaps for the small model.
+
+The loop now accumulates detached scalar objectives on the GPU, checks
+finiteness at the existing periodic logging boundary and epoch end, and
+synchronizes once before final timing. CUDA training also uses fused Adam.
+Exact epoch metrics, periodic failure detection, validation behavior, and
+checkpoint state are retained. The distillation suite passes all 24 tests.
+This implementation change must be benchmarked in a new run rather than
+attributed retroactively to `kbjjrx1c`.
+
+For the 12-core, 64 GB Vast instance, the aggressive next-run settings are a
+window batch of 768, 12 recordings per pool, 11 preparation workers, and eight
+prefetched batches. The observed 12.30 GB allocation at batch 448 projects to
+approximately 21.1 GB at batch 768, leaving a narrow but plausible margin on a
+24 GB card. Each queued full-subcarrier batch is approximately 2.5 GiB, so an
+eight-batch queue consumes about 20 GiB of host memory and leaves the remainder
+for Python, active recording slabs, and filesystem page cache. This is an
+intentional throughput stress configuration; an out-of-memory result should
+fall back to batch 704 without changing the model or loss.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier

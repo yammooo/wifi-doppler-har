@@ -518,7 +518,11 @@ def main() -> None:
 
     model = build_csi_to_doppler_model(config["model"]).to(device)
     model_key, model_builder = csi_to_doppler_model_metadata(config["model"])
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(config["training"]["learning_rate"]))
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=float(config["training"]["learning_rate"]),
+        fused=device.type == "cuda",
+    )
     scaler = make_grad_scaler(amp_enabled)
     start_epoch = 1
     global_step = 0

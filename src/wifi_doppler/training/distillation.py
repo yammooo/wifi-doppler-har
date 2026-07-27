@@ -684,7 +684,7 @@ def run_distillation_epoch(
     examples: list[dict[str, Any]] = []
     num_batches = 0
     num_samples = 0
-    objective_sum = 0.0
+    objective_sum: torch.Tensor | None = None
     loss_component_sums: dict[str, torch.Tensor] = {}
     started_at = time.perf_counter()
     data_wait_seconds = 0.0
@@ -721,11 +721,6 @@ def run_distillation_epoch(
                     options=loss_options,
                 )
                 loss = loss_components["loss"]
-            if not torch.isfinite(loss):
-                raise FloatingPointError(
-                    f"Non-finite {loss_name} loss for batch beginning with {batch.filenames[0]}"
-                )
-
             if training:
                 if scaler is not None and scaler.is_enabled():
                     scaler.scale(loss).backward()
@@ -738,6 +733,11 @@ def run_distillation_epoch(
 
             accumulator.update(predictions, targets)
             if batch_callback is not None and global_step % batch_callback_every == 0:
+                if not torch.isfinite(loss).item():
+                    raise FloatingPointError(
+                        f"Non-finite {loss_name} loss for batch beginning with "
+                        f"{batch.filenames[0]}"
+                    )
                 batch_callback(
                     global_step,
                     {
@@ -759,20 +759,27 @@ def run_distillation_epoch(
 
             num_batches += 1
             num_samples += inputs.shape[0]
-            objective_sum += float(loss.detach().item()) * inputs.shape[0]
+            weighted_loss = loss.detach().double() * inputs.shape[0]
+            if objective_sum is None:
+                objective_sum = weighted_loss
+            else:
+                objective_sum.add_(weighted_loss)
             for name, value in loss_components.items():
                 if name == "loss":
                     continue
-                batch_component = value.detach() * inputs.shape[0]
-                loss_component_sums[name] = (
-                    loss_component_sums[name] + batch_component
-                    if name in loss_component_sums
-                    else batch_component
-                )
+                batch_component = value.detach().double() * inputs.shape[0]
+                if name in loss_component_sums:
+                    loss_component_sums[name].add_(batch_component)
+                else:
+                    loss_component_sums[name] = batch_component
 
+    if objective_sum is None:
+        raise ValueError("No batches were processed.")
+    if not torch.isfinite(objective_sum).item():
+        raise FloatingPointError(f"Non-finite {loss_name} loss accumulated during the epoch.")
     elapsed = time.perf_counter() - started_at
     metrics = accumulator.compute()
-    metrics["loss"] = objective_sum / num_samples
+    metrics["loss"] = float(objective_sum.item()) / num_samples
     metrics.update(
         {
             name: float(component_sum.item()) / num_samples
