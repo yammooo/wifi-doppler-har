@@ -91,21 +91,48 @@ The converter preserves all 242 cleaned CSI subcarriers and direct float32
 Doppler targets under `data/csi_doppler_memmap`. Conversion is resumable: files
 already completed are skipped unless `--overwrite` is provided.
 
-To append the AR recordings that have matching Doppler folders to an existing
-PI memmap:
+The downloaded `S*` Doppler archive is suitable for standalone SHARP
+classification, but most recordings are not temporally aligned with the
+available `AR-*` raw MAT files. Do not use it as a raw-to-Doppler target
+source. Generate canonical, aligned AR and PC targets from the exact raw files:
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+python src/preprocessing/preprocess_sharp.py \
+    --input-root data/CSI-80Mhz \
+    --phase-root data/sharp_phase_recomputed \
+    --processed-root data/sharp_processed_recomputed \
+    --output-root data/doppler_traces_recomputed \
+    --subsets AR,PC \
+    --include-empty \
+    --jobs 16
+```
+
+`--subsets` accepts exact names, family selectors `AR`, `PC`, `PI`, or `all`.
+The H-estimation stage is checkpointed and completed outputs are reused unless
+`--force` is supplied. Start with `--subsets AR-1a --limit 1 --jobs 1` and the
+same command for `PC-1a` before launching the full run. The output manifest
+records the source paths, shapes, preprocessing geometry, and Git revision.
+
+`--jobs` uses local worker processes for both H estimation and post-processing,
+so it must not exceed the CPUs allocated to one node. H estimation resumes at
+completed antenna-stream boundaries by default. Packet-level checkpoints are
+available with `--checkpoint-every N`, but they rewrite large partial arrays
+and should be used only for highly preemptible runs. Keep BLAS thread counts at
+one as shown above to avoid nested CPU oversubscription. On the DEI cluster,
+put `--phase-root`, `--processed-root`, and other temporary files under `/ext`.
+
+After generation completes, append the canonical AR and PC recordings to the
+prepared memmap:
 
 ```bash
 python scripts/convert_csi_doppler_memmap.py \
     --raw-root data/CSI-80Mhz \
-    --doppler-root data/doppler_traces \
+    --doppler-root data/doppler_traces_recomputed \
     --output-root data/csi_doppler_memmap \
-    --scenarios S1a S1b S1c S2a S3a S4a S5a S6a S7a \
+    --scenarios AR PC \
     --append
 ```
-
-Append mode preserves existing manifest entries and records each source root.
-The prepared loader continues to filter the combined manifest by configured
-scenario.
 
 The chronological experiment record, linked W&B runs, negative results, and
 current hypotheses are maintained in

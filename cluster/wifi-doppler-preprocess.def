@@ -1,0 +1,39 @@
+Bootstrap: docker
+From: python:3.11-slim-bookworm
+
+%labels
+    Author Gianmarco
+    Purpose "SHARP CSI-to-Doppler target generation"
+
+%files
+    src/preprocessing/preprocess_sharp.py /opt/wifi-doppler-har/src/preprocessing/preprocess_sharp.py
+    external/sharp/optimization_utility.py /opt/wifi-doppler-har/external/sharp/optimization_utility.py
+
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends ca-certificates libgomp1
+    rm -rf /var/lib/apt/lists/*
+    python -m pip install --no-cache-dir \
+        numpy==1.26.4 \
+        scipy==1.17.1 \
+        osqp==1.1.3 \
+        tqdm==4.69.0
+
+%environment
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+    export PYTHONUNBUFFERED=1
+    export OMP_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+
+%runscript
+    exec python /opt/wifi-doppler-har/src/preprocessing/preprocess_sharp.py "$@"
+
+%test
+    python -c "import numpy, scipy, osqp, tqdm"
+    python /opt/wifi-doppler-har/src/preprocessing/preprocess_sharp.py --help >/dev/null
+
+%help
+    Generate aligned SHARP Doppler traces from raw 80 MHz CSI recordings.
+    Run this image through cluster/preprocess_ar_pc.slurm on the DEI cluster.

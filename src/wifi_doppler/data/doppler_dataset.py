@@ -21,6 +21,11 @@ PI_TRACE_PATTERN = re.compile(
     r"stream_(?P<antenna>\d+)\.txt$"
 )
 
+CANONICAL_TRACE_PATTERN = re.compile(
+    r"^(?P<family>AR|PC|PI)(?P<scenario_id>\d+)(?P<campaign>[a-z])_"
+    r"(?P<label>.+)_stream_(?P<antenna>\d+)\.txt$"
+)
+
 ACTIVITY_NAMES = {
     "W": "walking",
     "R": "running",
@@ -48,6 +53,15 @@ def parse_trace_filename(filename: str) -> dict[str, str | int] | None:
                 "repetition": info.get("repetition") or "",
                 "antenna": int(info["antenna"]),
             }
+    match = CANONICAL_TRACE_PATTERN.match(filename)
+    if match:
+        info = match.groupdict()
+        return {
+            "scenario": f"{info['family']}-{info['scenario_id']}{info['campaign']}",
+            "label": info["label"],
+            "repetition": "",
+            "antenna": int(info["antenna"]),
+        }
     return None
 
 # TODO: we now expect 4 antennas, but we should make this more flexible in the future

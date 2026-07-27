@@ -37,6 +37,7 @@ checkpoints/
 *.pt
 *.pth
 *.ckpt
+*.sif
 
 # Large raw/scientific data
 *.mat

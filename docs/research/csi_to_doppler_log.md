@@ -1209,6 +1209,203 @@ This is a scale experiment rather than a one-variable ablation because both
 the source-domain set and carrier count exceed `tio9b4ad`. No W&B run is
 linked yet.
 
+### Downloaded AR target alignment failure
+
+**Observed failure**
+
+The first combined AR+PI training attempt failed while stacking a
+mixed-recording batch. The model was not reached: at least one raw CSI slice
+was shorter than the expected `[4,242,370,2]` input window.
+
+Manifest inspection compared cleaned raw packet count `N_raw` with downloaded
+Doppler frame count `N_doppler`. For the standard SHARP geometry
+`start=800`, `end=800`, `sample_length=31`, and `sliding=1`, an aligned pair
+should satisfy:
+
+```text
+N_raw - N_doppler = 1631
+```
+
+An observed value of `1632` is a harmless one-frame implementation difference.
+`S1a`, `S1b`, `S1c`, and `S7a` consistently satisfy `1631/1632`. Other
+downloaded domains do not:
+
+```text
+S2a_E: raw 21626, Doppler 50227, delta -28601
+S2a_L: raw 21025, Doppler 51052, delta -30027
+S3a-S5a: heterogeneous deltas below and above 1631
+S6a: deltas around 6300-6700
+```
+
+`S2a_E/L` cannot originate from their paired MAT files under any valid crop
+because the target is much longer than the available raw stream. For the other
+inconsistent domains, length differences cannot recover alignment: they reveal
+only total trimming, not whether packets were removed from the beginning or
+end. Padding, truncating, or inferring an offset would create unverified
+training pairs.
+
+**Why the SHARP reproduction still worked**
+
+`notebooks/sharp_reproduction.ipynb` uses `DopplerWindowDataset`, which reads
+only fixed-size windows from precomputed Doppler traces. It never pairs those
+windows with raw CSI. Its default invocation also uses only `S1a/S1b/S1c` and
+activities `E/L/W/R/J`; it is neither a full-AR run nor a raw-to-Doppler
+alignment test.
+
+**Decision**
+
+- Do not use downloaded `S*` traces for raw-to-Doppler distillation.
+- Recompute canonical targets from every available AR raw MAT recording.
+- Generate PC targets in the same pass because distillation does not require
+  activity labels.
+- Keep the already aligned PI targets unless a single fully regenerated
+  dataset version is later required.
+- Preprocess PC now but initially hold it out from optimization as an
+  additional unseen-domain evaluation set.
+- Retain the invalid combined config only as historical provenance and do not
+  associate it with a W&B run.
+
+**Implementation**
+
+The generic generator is
+[`preprocess_sharp.py`](../../src/preprocessing/preprocess_sharp.py). The old
+`preprocess_sharp_pi.py` path is now a compatibility entry point. The SHARP
+objective, reconstruction equations, and Doppler geometry are preserved. Generic
+discovery accepts exact subsets and the `AR`, `PC`, `PI`, and `all` family
+selectors. Generated files preserve canonical source stems, for example:
+
+```text
+doppler_traces_recomputed/AR-1a/AR1a_W_stream_0.txt
+doppler_traces_recomputed/PC-1a/PC1a_W_stream_0.txt
+```
+
+The pairing layer recognizes these canonical filenames directly, avoiding the
+downloaded archive's `S* -> AR-*` alias. `manifest.json` records the source
+path and shape, cleaned raw shape, aligned raw start, output stream shapes,
+preprocessing parameters, repository revision/dirty state, and script checksum.
+The generator validates the expected target frame count before accepting each
+recording.
+
+**Local smoke and scale estimate**
+
+A bounded end-to-end smoke used one real AR MAT file and one real PC MAT file,
+with unique temporary stems and 64 H-estimation packets per antenna. It
+successfully produced four `[33,100]` streams per recording and a valid
+manifest. With two worker processes, H estimation completed 512
+antenna-packets at approximately 44 packets/s.
+
+Header inspection of the complete local raw collection found:
+
+```text
+AR recordings:               164
+PC recordings:                40
+total recordings:            204
+H-estimation antenna-packets: approximately 20.7 million
+```
+
+At the two-worker smoke rate, a local run would take roughly 5.5 days.
+Ideal linear scaling to 100 workers would be about 2.6 hours, but real runtime
+will be higher due to process startup, MAT/pickle I/O, memory bandwidth, and
+filesystem contention. Each worker loads a full normalized signal recording
+and retains complex H-estimation arrays, so the production job must benchmark
+memory and throughput before requesting hundreds of workers. BLAS/OpenMP
+thread counts should remain one to prevent nested oversubscription.
+
+The uncompressed signal, H-estimation, and reconstructed-phase intermediates
+may require several hundred GB for all AR and PC recordings. Run them on
+cluster scratch rather than a small home quota and retain the checkpoint files
+until Doppler generation has completed.
+
+No W&B run is linked because target generation and the replacement training
+configuration have not completed.
+
+### SHARP target-generation performance audit
+
+Profiling showed that H estimation, not Doppler FFT computation, dominates
+target generation. The original inner loop rebuilt Fourier dictionaries,
+sparse constraint matrices, and two OSQP workspaces for every antenna-packet.
+A 32-packet controlled profile spent `0.404/0.930 s` constructing Fourier
+dictionaries and `0.452/0.930 s` in the LASSO wrapper, including 64 OSQP
+setups.
+
+The generic generator now:
+
+- builds Fourier dictionaries with vectorized NumPy operations;
+- prepares the fixed coarse OSQP problem once per worker;
+- caches refined OSQP problems by coarse delay bin;
+- resets primal and dual state for each packet while reusing matrix
+  factorizations;
+- orders H tasks by stream so a large worker pool does not immediately load
+  four copies of each recording;
+- no longer unpickles large checkpoint files repeatedly for progress display;
+- defaults to stream-boundary resume instead of rewriting approximately
+  130 MB of partial arrays every 500 packets;
+- accepts an explicit `--phase-root`, allowing large intermediates to live
+  under cluster scratch instead of the repository;
+- preprocesses raw signal recordings with at most eight worker processes;
+- distributes reconstruction and Doppler post-processing by recording;
+- batches Doppler FFTs in cache-sized groups and vectorizes phase detrending.
+
+The optimized 32-packet profile took `0.337 s`, approximately `2.8x` faster.
+The Fourier dictionaries are bit-identical to the original implementation.
+Cached OSQP coefficients agreed within its numerical stopping tolerance
+(maximum observed absolute difference `2.2e-4`). Doppler output agreed to
+machine precision (`1.7e-15` maximum absolute difference), and vectorized
+detrending agreed within `2.8e-15`.
+
+A bounded real `AR1a_C` CLI smoke with four workers processed 256
+antenna-packets in approximately `1.9 s` for H estimation, completed
+post-processing, and resumed in under one second. This short measurement is
+startup-dominated and is not a full-dataset runtime prediction.
+
+The multiprocessing implementation spans CPUs on one node only. On the DEI
+cluster it should be submitted as one Slurm task with multiple CPUs per task,
+and `--jobs` should equal `SLURM_CPUS_PER_TASK`. A multi-node run must partition
+subsets into independent output roots to avoid concurrent manifest writes.
+
+### DEI cluster deployment
+
+The target generator is CPU-only and does not benefit from requesting a GPU.
+The deployment consists of:
+
+- [`cluster/wifi-doppler-preprocess.def`](../../cluster/wifi-doppler-preprocess.def),
+  a minimal Python 3.11 Singularity image containing only NumPy, SciPy, OSQP,
+  tqdm, and the two required source files;
+- [`cluster/preprocess_ar_pc.slurm`](../../cluster/preprocess_ar_pc.slurm), a
+  single-node multiprocessing job;
+- [`cluster/README.md`](../../cluster/README.md), containing transfer, image
+  build, smoke, production, and monitoring commands.
+
+The raw dataset location `~/CSI-80Mhz` is valid because DEI automatically
+mounts home inside Singularity. It should remain persistent input rather than
+being copied to node scratch before allocation. Its 248 MAT files comprise 204
+AR+PC recordings and 44 PI recordings. Home quota must still be checked before
+writing the approximately 15-20 GiB of final AR+PC Doppler traces there; a group
+NAS path should be used when quota is insufficient.
+
+Large phase, H-estimation, and reconstructed-CSI intermediates are directed to
+`/ext/$USER/wifi-doppler-har/$SLURM_JOB_ID`. The job requires at least 300 GiB
+free scratch, preserves scratch on failure, validates the persistent manifest
+on success, and then removes its job-specific scratch directory. This follows
+DEI's requirement that `/ext` be used only for temporary node data.
+
+The production request defaults to one task with 48 CPUs, 96 GiB RAM, and 12
+hours in `allgroups`. Forty-eight CPUs can be scheduled on more DEI nodes than
+a 96-CPU request and should therefore have better availability. The code has
+816 independent H-estimation streams, so a 96-CPU override remains available
+after measuring the bounded smoke job with `seff` and `myjobinfo`.
+
+The unused SHARP `r_vector` artifact was removed before deployment. Only
+`Tr_vector` is consumed by reconstruction; dropping `r_vector` saves roughly
+40 GiB across AR+PC and reduces each worker's resident memory. Packet-level
+checkpointing remains disabled because completed `Tr_vector` streams already
+provide the useful resume boundary without repeated large-array writes.
+
+The image cannot be built in the current local environment because neither
+Singularity nor Apptainer is installed. DEI documents building images inside a
+short `sinteractive` allocation; the supplied definition includes `%test`
+checks that run during build and can be repeated with `apptainer test`.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier

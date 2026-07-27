@@ -28,7 +28,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-root", type=Path, default=Path("data/CSI-80Mhz"))
     parser.add_argument("--doppler-root", type=Path, default=Path("data/doppler_traces_pi"))
     parser.add_argument("--output-root", type=Path, default=Path("data/csi_doppler_memmap"))
-    parser.add_argument("--scenarios", nargs="+", default=list(DEFAULT_SCENARIOS))
+    parser.add_argument(
+        "--scenarios",
+        nargs="+",
+        default=list(DEFAULT_SCENARIOS),
+        help="Scenario names or family selectors AR, PC, PI, or all.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--append",
@@ -40,6 +45,24 @@ def parse_args() -> argparse.Namespace:
 
 def resolve_path(project_root: Path, path: Path) -> Path:
     return (project_root / path).resolve() if not path.is_absolute() else path.resolve()
+
+
+def resolve_scenarios(doppler_root: Path, selectors: list[str]) -> list[str]:
+    available = sorted(path.name for path in doppler_root.iterdir() if path.is_dir())
+    scenarios: list[str] = []
+    for selector in selectors:
+        if selector.lower() == "all":
+            matches = available
+        elif selector.upper() in {"AR", "PC", "PI"}:
+            matches = [name for name in available if name.startswith(f"{selector.upper()}-")]
+        else:
+            matches = [selector]
+        for scenario in matches:
+            if scenario not in scenarios:
+                scenarios.append(scenario)
+    if not scenarios:
+        raise ValueError(f"No scenarios matched {selectors} under {doppler_root}")
+    return scenarios
 
 
 def save_npy_atomic(path: Path, array: np.ndarray) -> None:
@@ -110,6 +133,7 @@ def main() -> None:
     raw_root = resolve_path(project_root, args.raw_root)
     doppler_root = resolve_path(project_root, args.doppler_root)
     output_root = resolve_path(project_root, args.output_root)
+    scenarios = resolve_scenarios(doppler_root, args.scenarios)
     output_root.mkdir(parents=True, exist_ok=True)
 
     manifest_path = output_root / "manifest.json"
@@ -138,7 +162,7 @@ def main() -> None:
                 }
             )
 
-    for scenario in args.scenarios:
+    for scenario in scenarios:
         dataset = CsiToSharpDopplerDataset(
             raw_root=raw_root,
             doppler_root=doppler_root,
@@ -162,7 +186,7 @@ def main() -> None:
     source = {
         "raw_root": str(raw_root),
         "doppler_root": str(doppler_root),
-        "scenarios": sorted(args.scenarios),
+        "scenarios": sorted(scenarios),
     }
     if source not in sources:
         sources.append(source)
