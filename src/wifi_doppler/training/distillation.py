@@ -78,7 +78,6 @@ def distillation_loss_components(
         )
     raise ValueError(f"Unknown distillation loss: {name!r}")
 
-
 def motion_aware_mse_loss_components(
     predictions: torch.Tensor,
     targets: torch.Tensor,
@@ -90,19 +89,18 @@ def motion_aware_mse_loss_components(
     background_leakage_weight: float = 0.25,
     wasserstein_weight: float = 0.05,
     eps: float = 1e-8,
+    center_weight_floor: float = 0.1,        # Nuovo: pavimento per Amplitude MSE
+    motion_threshold: float = 0.01,          # Nuovo: soglia per frame validi
 ) -> dict[str, torch.Tensor]:
     """Emphasize target-active off-center bins while suppressing false power."""
+    
     if predictions.ndim != 4:
-        raise ValueError(
-            "Expected predictions [batch, antenna, time, doppler_bin], "
-            f"got {tuple(predictions.shape)}"
-        )
+        raise ValueError(f"Expected predictions [batch, antenna, time, doppler_bin], got {tuple(predictions.shape)}")
     if not 0 <= floor < 1:
         raise ValueError("floor must be in [0, 1).")
-    if center_taper_sigma_bins is None:
-        if center_half_width < 0 or center_half_width >= predictions.shape[-1] // 2:
-            raise ValueError("center_half_width must select a proper subset of Doppler bins.")
-    elif center_taper_sigma_bins <= 0:
+    if center_taper_sigma_bins is None and (center_half_width < 0 or center_half_width >= predictions.shape[-1] // 2):
+        raise ValueError("center_half_width must select a proper subset of Doppler bins.")
+    elif center_taper_sigma_bins is not None and center_taper_sigma_bins <= 0:
         raise ValueError("center_taper_sigma_bins must be positive.")
     if min(motion_mse_weight, background_leakage_weight, wasserstein_weight) < 0:
         raise ValueError("Loss weights must be non-negative.")
@@ -111,63 +109,81 @@ def motion_aware_mse_loss_components(
     targets = targets.float()
     num_bins = predictions.shape[-1]
     center = num_bins // 2
+    
+    # ---------------------------------------------------------
+    # 1. DECOUPLED MASKS
+    # ---------------------------------------------------------
     if center_taper_sigma_bins is None:
-        motion_bin_weight = torch.ones(
-            num_bins,
-            dtype=predictions.dtype,
-            device=predictions.device,
-        )
-        motion_bin_weight[center - center_half_width : center + center_half_width + 1] = 0
+        gaussian_notch = torch.ones(num_bins, dtype=predictions.dtype, device=predictions.device)
+        gaussian_notch[center - center_half_width : center + center_half_width + 1] = 0.0
     else:
-        distance = torch.arange(
-            num_bins,
-            dtype=predictions.dtype,
-            device=predictions.device,
-        ) - center
-        motion_bin_weight = 1 - torch.exp(
-            -0.5 * (distance / center_taper_sigma_bins).square()
-        )
+        distance = torch.arange(num_bins, dtype=predictions.dtype, device=predictions.device) - center
+        gaussian_notch = 1.0 - torch.exp(-0.5 * (distance / center_taper_sigma_bins).square())
 
+    # Maschera pura (zero al centro) per il trasporto ottimale
+    wasserstein_bin_weight = gaussian_notch
+    # Maschera con pavimento per affilare l'MSE anche sul torso
+    amplitude_bin_weight = center_weight_floor + (1.0 - center_weight_floor) * gaussian_notch
+
+    # ---------------------------------------------------------
+    # 2. FULL MAP MSE
+    # ---------------------------------------------------------
     squared_error = (predictions - targets).square()
     full_map_mse = squared_error.mean()
 
-    target_activity = (
-        ((targets - floor) / (1 - floor)).clamp(0, 1) * motion_bin_weight
-    )
-    target_activity_sum = target_activity.sum()
-    motion_mse = (target_activity * squared_error).sum() / target_activity_sum.clamp_min(eps)
+    # ---------------------------------------------------------
+    # 3. MOTION MSE (FRAME-LEVEL NORMALIZATION)
+    # ---------------------------------------------------------
+    target_activity_amp = (((targets - floor) / (1 - floor)).clamp(0, 1) * amplitude_bin_weight)
+    weighted_error = target_activity_amp * squared_error
+    
+    frame_activity = target_activity_amp.sum(dim=-1)
+    frame_error = weighted_error.sum(dim=-1) / frame_activity.clamp_min(eps)
+    
+    valid_motion_frame = frame_activity > motion_threshold
+    
+    # Previene NaN se un batch intero è statico (es. rumore di fondo)
+    if valid_motion_frame.any():
+        motion_mse = frame_error[valid_motion_frame].mean()
+    else:
+        motion_mse = torch.tensor(0.0, dtype=predictions.dtype, device=predictions.device)
 
+    # ---------------------------------------------------------
+    # 4. BACKGROUND LEAKAGE
+    # ---------------------------------------------------------
     background = (targets <= floor + 1e-6).to(predictions.dtype)
-    background_leakage = (
-        background * (predictions - floor).clamp_min(0)
-    ).sum() / background.sum().clamp_min(1)
+    background_leakage = (background * (predictions - floor).clamp_min(0)).sum() / background.sum().clamp_min(1)
 
-    pred_active = (predictions - floor).clamp_min(0) * motion_bin_weight
-    target_active = (targets - floor).clamp_min(0) * motion_bin_weight
-    motion_bin_weight_sum = motion_bin_weight.sum()
-    pred_distribution = (pred_active + eps * motion_bin_weight) / (
-        pred_active.sum(dim=-1, keepdim=True) + eps * motion_bin_weight_sum
-    )
-    target_distribution = (target_active + eps * motion_bin_weight) / (
-        target_active.sum(dim=-1, keepdim=True) + eps * motion_bin_weight_sum
-    )
-    frame_wasserstein = (
-        pred_distribution.cumsum(dim=-1) - target_distribution.cumsum(dim=-1)
-    ).abs().sum(dim=-1) / (num_bins - 1)
-    frame_motion_weight = target_activity.sum(dim=-1)
-    motion_wasserstein = (
-        frame_wasserstein * frame_motion_weight
-    ).sum() / frame_motion_weight.sum().clamp_min(eps)
+    # ---------------------------------------------------------
+    # 5. MOTION WASSERSTEIN (ORIGINAL PMF LOGIC)
+    # ---------------------------------------------------------
+    pred_active = (predictions - floor).clamp_min(0) * wasserstein_bin_weight
+    target_active = (targets - floor).clamp_min(0) * wasserstein_bin_weight
+    wasserstein_bin_weight_sum = wasserstein_bin_weight.sum()
 
+    # PMF correttamente normalizzata per costruzione matematica
+    pred_distribution = (pred_active + eps * wasserstein_bin_weight) / (
+        pred_active.sum(dim=-1, keepdim=True) + eps * wasserstein_bin_weight_sum
+    )
+    target_distribution = (target_active + eps * wasserstein_bin_weight) / (
+        target_active.sum(dim=-1, keepdim=True) + eps * wasserstein_bin_weight_sum
+    )
+
+    frame_wasserstein = (pred_distribution.cumsum(dim=-1) - target_distribution.cumsum(dim=-1)).abs().sum(dim=-1) / (num_bins - 1)
+    
+    # Il peso del frame per il wasserstein usa la maschera pura per ignorare il peso statico
+    frame_motion_weight_wass = target_active.sum(dim=-1)
+    motion_wasserstein = (frame_wasserstein * frame_motion_weight_wass).sum() / frame_motion_weight_wass.sum().clamp_min(eps)
+
+    # ---------------------------------------------------------
+    # 6. AGGREGATION
+    # ---------------------------------------------------------
     weighted_motion_mse = motion_mse_weight * motion_mse
     weighted_background_leakage = background_leakage_weight * background_leakage
     weighted_motion_wasserstein = wasserstein_weight * motion_wasserstein
-    loss = (
-        full_map_mse
-        + weighted_motion_mse
-        + weighted_background_leakage
-        + weighted_motion_wasserstein
-    )
+    
+    loss = full_map_mse + weighted_motion_mse + weighted_background_leakage + weighted_motion_wasserstein
+    
     return {
         "loss": loss,
         "loss_full_map_mse": full_map_mse,
@@ -178,7 +194,6 @@ def motion_aware_mse_loss_components(
         "background_leakage": background_leakage,
         "motion_wasserstein": motion_wasserstein,
     }
-
 
 def motion_weighted_wasserstein_loss(
     predictions: torch.Tensor,
@@ -571,13 +586,15 @@ def run_distillation_epoch(
             if training:
                 optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                predictions = model(inputs)
+                raw_predictions = model(inputs)
+                predictions = F.softplus(raw_predictions)
                 loss_components = distillation_loss_components(
                     predictions,
                     targets,
                     name=loss_name,
                     options=loss_options,
                 )
+
                 loss = loss_components["loss"]
             if not torch.isfinite(loss):
                 raise FloatingPointError(
