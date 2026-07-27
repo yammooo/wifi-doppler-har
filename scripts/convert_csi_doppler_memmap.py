@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -214,8 +215,8 @@ def main() -> None:
     }
     save_json_atomic(manifest_path, manifest)
     total_gib = sum(
-        np.prod(item["raw_shape"]) * np.dtype(item["raw_dtype"]).itemsize
-        + np.prod(item["doppler_shape"]) * np.dtype(item["doppler_dtype"]).itemsize
+        math.prod(item["raw_shape"]) * np.dtype(item["raw_dtype"]).itemsize
+        + math.prod(item["doppler_shape"]) * np.dtype(item["doppler_dtype"]).itemsize
         for item in recordings
     ) / 1024**3
     print(f"prepared {len(recordings)} recordings at {output_root} ({total_gib:.2f} GiB)")

@@ -195,6 +195,13 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("training.recordings_per_batch must be an integer between 1 and batch_size.")
     if recordings_per_batch > 1 and config["data"].get("storage", "source") != "memmap":
         raise ValueError("Mixed-recording batches require data.storage=memmap.")
+    window_shuffle_chunk_size = config["training"].get("window_shuffle_chunk_size", 1)
+    if (
+        not isinstance(window_shuffle_chunk_size, int)
+        or isinstance(window_shuffle_chunk_size, bool)
+        or window_shuffle_chunk_size < 1
+    ):
+        raise ValueError("training.window_shuffle_chunk_size must be an integer >= 1.")
     if config["training"]["early_stopping_patience"] < 1:
         raise ValueError("training.early_stopping_patience must be >= 1.")
     if config["training"]["log_every_steps"] < 1:
@@ -571,8 +578,9 @@ def main() -> None:
             batch_size=batch_size,
             shuffle=shuffle,
             seed=batch_seed,
-            recordings_per_batch=(
-                int(config["training"].get("recordings_per_batch", 1)) if shuffle else 1
+            recordings_per_batch=int(config["training"].get("recordings_per_batch", 1)),
+            window_shuffle_chunk_size=int(
+                config["training"].get("window_shuffle_chunk_size", 1)
             ),
         )
         host_batches = prefetch_batches(

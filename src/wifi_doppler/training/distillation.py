@@ -326,12 +326,15 @@ def iter_recording_batches(
     shuffle: bool,
     seed: int,
     recordings_per_batch: int = 1,
+    window_shuffle_chunk_size: int = 1,
 ) -> Iterator[DistillationBatch]:
     """Yield all windows from bounded pools of backing recordings."""
     if batch_size < 1:
         raise ValueError("batch_size must be >= 1")
     if recordings_per_batch < 1 or recordings_per_batch > batch_size:
         raise ValueError("recordings_per_batch must be between 1 and batch_size.")
+    if window_shuffle_chunk_size < 1:
+        raise ValueError("window_shuffle_chunk_size must be >= 1.")
 
     by_recording: dict[int, list[tuple[int, int]]] = {}
     for base_idx, window in enumerate(dataset.window_indexes):
@@ -349,7 +352,12 @@ def iter_recording_batches(
         for recording_idx in pool:
             items = list(by_recording[recording_idx])
             if shuffle:
-                rng.shuffle(items)
+                chunks = [
+                    items[offset : offset + window_shuffle_chunk_size]
+                    for offset in range(0, len(items), window_shuffle_chunk_size)
+                ]
+                rng.shuffle(chunks)
+                items = [item for chunk in chunks for item in chunk]
             pool_items[recording_idx] = items
 
         interleaved: list[tuple[int, int, int]] = []
@@ -385,11 +393,11 @@ def iter_recording_batches(
                         item[2],
                     ),
                 )
-                inputs: list[np.ndarray] = []
-                targets: list[np.ndarray] = []
+                inputs: np.ndarray | None = None
+                targets: np.ndarray | None = None
                 filenames: list[str] = []
 
-                for recording_idx, base_idx, view_idx in batch_items:
+                for sample_idx, (recording_idx, base_idx, view_idx) in enumerate(batch_items):
                     recording = dataset.traces[recording_idx]
                     raw, doppler = loaded[recording_idx]
                     window = dataset.window_indexes[base_idx]
@@ -397,7 +405,6 @@ def iter_recording_batches(
                     raw_start, raw_end = dataset.raw_bounds_for_doppler_window(window.start, window.end)
 
                     x_complex = raw[:, selected_subcarriers, raw_start:raw_end]
-                    x = np.stack((x_complex.real, x_complex.imag), axis=-1).astype(np.float32, copy=False)
                     y = doppler[:, window.start:window.end].astype(np.float32, copy=False)
                     expected_input_shape = (
                         doppler.shape[0],
@@ -410,31 +417,38 @@ def iter_recording_batches(
                         window.end - window.start,
                         doppler.shape[-1],
                     )
-                    if x.shape != expected_input_shape or y.shape != expected_target_shape:
+                    actual_input_shape = (*x_complex.shape, 2)
+                    if actual_input_shape != expected_input_shape or y.shape != expected_target_shape:
                         raise ValueError(
                             f"Incompatible CSI/Doppler window for {recording.filename_stem}: "
-                            f"input shape {x.shape}, expected {expected_input_shape}; "
+                            f"input shape {actual_input_shape}, expected {expected_input_shape}; "
                             f"target shape {y.shape}, expected {expected_target_shape}; "
                             f"raw backing shape {raw.shape}, Doppler backing shape {doppler.shape}; "
                             f"raw bounds [{raw_start}, {raw_end}), "
                             f"Doppler bounds [{window.start}, {window.end}). "
                             "The paired recording does not contain the configured aligned window."
                         )
-                    if not np.isfinite(x).all() or not np.isfinite(y).all():
-                        raise ValueError(
-                            f"Non-finite CSI/Doppler values in {recording.filename_stem} "
-                            f"at Doppler window [{window.start}, {window.end})"
+                    if inputs is None:
+                        inputs = np.empty(
+                            (len(batch_items), *expected_input_shape),
+                            dtype=np.float32,
+                        )
+                        targets = np.empty(
+                            (len(batch_items), *expected_target_shape),
+                            dtype=np.float32,
                         )
 
-                    inputs.append(x)
-                    targets.append(y)
+                    inputs[sample_idx, ..., 0] = x_complex.real
+                    inputs[sample_idx, ..., 1] = x_complex.imag
+                    targets[sample_idx] = y
                     filenames.append(
                         f"{recording.filename_stem}_d{window.start}-{window.end}_view{view_idx}"
                     )
 
+                assert inputs is not None and targets is not None
                 yield DistillationBatch(
-                    inputs=torch.from_numpy(np.ascontiguousarray(np.stack(inputs))),
-                    targets=torch.from_numpy(np.ascontiguousarray(np.stack(targets))),
+                    inputs=torch.from_numpy(inputs),
+                    targets=torch.from_numpy(targets),
                     filenames=tuple(filenames),
                 )
         finally:
@@ -579,10 +593,23 @@ def run_distillation_epoch(
     objective_sum = 0.0
     loss_component_sums: dict[str, torch.Tensor] = {}
     started_at = time.perf_counter()
+    data_wait_seconds = 0.0
+
+    def measured_batches() -> Iterator[DistillationBatch]:
+        nonlocal data_wait_seconds
+        iterator = iter(batches)
+        while True:
+            wait_started_at = time.perf_counter()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                return
+            data_wait_seconds += time.perf_counter() - wait_started_at
+            yield batch
 
     grad_context = torch.enable_grad if training else torch.inference_mode
     with grad_context():
-        for batch in batches:
+        for batch in measured_batches():
             inputs = batch.inputs
             targets = batch.targets
             if inputs.device != device or targets.device != device:
@@ -660,6 +687,8 @@ def run_distillation_epoch(
     )
     metrics["samples_per_second"] = num_samples / elapsed if elapsed > 0 else 0.0
     metrics["elapsed_seconds"] = elapsed
+    metrics["data_wait_seconds"] = data_wait_seconds
+    metrics["data_wait_fraction"] = data_wait_seconds / elapsed if elapsed > 0 else 0.0
     return EpochResult(
         metrics=metrics,
         num_batches=num_batches,

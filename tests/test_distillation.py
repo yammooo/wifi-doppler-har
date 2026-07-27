@@ -342,6 +342,9 @@ class DistillationTests(unittest.TestCase):
         self.assertEqual(count_recording_batches(dataset, batch_size=1), 4)
         self.assertEqual(len(filenames), len(dataset))
         self.assertEqual(len(set(filenames)), len(dataset))
+        expected = dataset.traces[0].raw[:, [0, 2], :3]
+        torch.testing.assert_close(batches[0].inputs[0, ..., 0], torch.from_numpy(expected.real))
+        torch.testing.assert_close(batches[0].inputs[0, ..., 1], torch.from_numpy(expected.imag))
         for recording in dataset.traces:
             self.assertEqual(recording.raw_loads, 1)
             self.assertEqual(recording.doppler_loads, 1)
@@ -367,6 +370,7 @@ class DistillationTests(unittest.TestCase):
                 shuffle=True,
                 seed=3,
                 recordings_per_batch=2,
+                window_shuffle_chunk_size=2,
             )
         )
         filenames = [filename for batch in batches for filename in batch.filenames]
@@ -394,6 +398,7 @@ class DistillationTests(unittest.TestCase):
                     shuffle=True,
                     seed=seed,
                     recordings_per_batch=2,
+                    window_shuffle_chunk_size=2,
                 )
                 for filename in batch.filenames
             ]

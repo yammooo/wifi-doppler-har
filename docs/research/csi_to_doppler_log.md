@@ -1406,6 +1406,70 @@ Singularity nor Apptainer is installed. DEI documents building images inside a
 short `sinteractive` allocation; the supplied definition includes `%test`
 checks that run during build and can be repeated with `apptainer test`.
 
+### 2026-07-27: combined-data run and GPU starvation
+
+**Run**
+
+[W&B `ehotc8fp`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/ehotc8fp)
+is the first canonical combined-data run. It uses the shared single-antenna
+1D U-Net with spatial head, all 242 subcarriers, and the motion-aware loss.
+The training split contains 233 AR/PC/PI-1a/2a/3a recordings and 121,629
+windows. PI-4a remains target-only.
+
+Epoch 1 measured:
+
+```text
+train:       1,644.4 s, 74.0 windows/s
+source val:    336.8 s, 114.7 windows/s
+target val:     23.7 s, 119.5 windows/s
+target-val loss: 0.023761
+target-val MSE:  0.006431
+```
+
+W&B sampled the GPU at 15-second intervals. During the first approximately
+27 minutes, GPU utilization ranged from 0% to 85% and averaged about 32%.
+Allocated GPU memory peaked at approximately 4.7 GB, while system RAM reached
+97%. The process used roughly one CPU core. Batch-log intervals normally
+reached 165-210 windows/s but periodically fell below 35 windows/s, especially
+around recording-pool transitions. This identifies host data preparation and
+random memmap access as the limiting path; the 3.1-million-parameter model is
+not saturating the GPU.
+
+**Root causes**
+
+- A full batch contains roughly 210 MiB of CSI and targets before transfer.
+- One producer thread performed all slicing, real/imaginary conversion,
+  finite scans, stacking, and pinning.
+- Each sample was allocated once and then copied again by the final batch
+  stack.
+- Every heavily overlapping window was scanned for finite values, repeating
+  most reads about twelve times at stride 30 and raw window length 370.
+- Fully random window order turned memmapped recordings into random reads and
+  caused page-cache stalls under high RAM pressure.
+- Validation opened one recording per pool, increasing mapping and partial
+  batch boundaries.
+
+**Optimization prepared after `ehotc8fp`**
+
+- Fill one preallocated float32 batch directly from complex memmaps.
+- Remove redundant per-window finite scans; non-finite model/loss output still
+  fails immediately.
+- Use eight-recording pools for deterministic validation as well as training.
+- Add `train/source_val/target_val data_wait_seconds` and
+  `data_wait_fraction` metrics.
+- Add explicit `training.window_shuffle_chunk_size: 8` to the combined-data
+  config. Chunks are shuffled, but windows remain chronological within each
+  chunk. With batch 64 and eight recordings, a full batch still contains about
+  eight windows from every recording while reading approximately 580 adjacent
+  raw frames per recording instead of as many as 2,960 random frames.
+
+Chunked shuffling changes optimization order, though not epoch coverage, and
+therefore requires a distinct W&B run rather than being interpreted as a
+continuation of `ehotc8fp`. Batch size was not increased: system RAM, not GPU
+capacity, was already the tighter resource. The next run should compare epoch
+throughput, GPU utilization, and `data_wait_fraction` before considering
+multiple producer workers or a larger batch.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
