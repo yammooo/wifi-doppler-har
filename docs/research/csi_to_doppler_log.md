@@ -1517,6 +1517,35 @@ solution is an averaged central spectrum. The run must therefore be judged by
 both train-versus-validation behavior and motion-peak heatmaps. No W&B run is
 linked yet because this entry records the experiment before execution.
 
+**Interim run diagnostics**
+
+[W&B `vbrol6v2`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/vbrol6v2)
+uses this 792,609-parameter model with window batch size 160, equivalent to
+640 single-antenna examples per model forward. It includes the contiguous
+subcarrier slice fix at commit `24f264e`.
+
+Before the first validation completed, W&B measured peak allocated GPU memory
+at 7.04 GB on the 8 GiB RTX 2070. Mean GPU compute utilization was 26.7%, with
+28.6% of samples below 1% and bursts reaching 98%. Mean GPU memory-controller
+utilization was only 8.9%, and mean power was 45% of the limit. A direct live
+sample found the GPU at 52 degrees C and 56 W of its 185 W limit. The GPU is
+therefore neither too small-batched, thermally throttled, nor continuously
+memory-bandwidth limited; it alternates between computing and waiting.
+
+The host has six CPU cores and 16 GB RAM. W&B measured mean system RAM at
+86.8%, a 95% peak, and mean process RSS at 4.77 GB. Its system disk-read
+counter increased by approximately 131 GB during the roughly 1,453-second
+training phase. The 121,629-window phase therefore achieved approximately
+83.7 windows/s despite the model being one quarter the baseline size.
+Repeated materialization of heavily overlapping memmap windows by one producer
+thread remains the dominant bottleneck.
+
+Batch size should not be increased further: 160 already approaches the GPU
+memory limit, and a linearly scaled batch of 192 would exceed it while adding
+CPU and pinned-memory pressure. The next performance work should target batch
+production and overlapping-window I/O. Capacity conclusions must wait for the
+completed losses and heatmaps.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
