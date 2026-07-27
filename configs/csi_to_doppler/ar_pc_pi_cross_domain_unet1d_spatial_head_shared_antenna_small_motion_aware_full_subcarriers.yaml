@@ -59,6 +59,7 @@ training:
   batch_size: 160
   recordings_per_batch: 8
   window_shuffle_chunk_size: 8
+  batch_preparation_workers: 2
   learning_rate: 0.001
   epochs: 100
   amp: true

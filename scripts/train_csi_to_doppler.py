@@ -202,6 +202,13 @@ def validate_config(config: dict[str, Any]) -> None:
         or window_shuffle_chunk_size < 1
     ):
         raise ValueError("training.window_shuffle_chunk_size must be an integer >= 1.")
+    batch_preparation_workers = config["training"].get("batch_preparation_workers", 1)
+    if (
+        not isinstance(batch_preparation_workers, int)
+        or isinstance(batch_preparation_workers, bool)
+        or batch_preparation_workers < 1
+    ):
+        raise ValueError("training.batch_preparation_workers must be an integer >= 1.")
     if config["training"]["early_stopping_patience"] < 1:
         raise ValueError("training.early_stopping_patience must be >= 1.")
     if config["training"]["log_every_steps"] < 1:
@@ -432,6 +439,7 @@ def normalized_resume_config(config: dict[str, Any]) -> dict[str, Any]:
         "log_every_steps",
         "validation_examples",
         "prefetch_batches",
+        "batch_preparation_workers",
         "pin_memory",
         "cuda_prefetch",
         "cudnn_benchmark",
@@ -581,6 +589,9 @@ def main() -> None:
             recordings_per_batch=int(config["training"].get("recordings_per_batch", 1)),
             window_shuffle_chunk_size=int(
                 config["training"].get("window_shuffle_chunk_size", 1)
+            ),
+            batch_preparation_workers=int(
+                config["training"].get("batch_preparation_workers", 1)
             ),
         )
         host_batches = prefetch_batches(

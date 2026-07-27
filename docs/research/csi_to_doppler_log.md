@@ -1546,6 +1546,31 @@ CPU and pinned-memory pressure. The next performance work should target batch
 production and overlapping-window I/O. Capacity conclusions must wait for the
 completed losses and heatmaps.
 
+**Grouped-slab batch preparation**
+
+The iterator now groups each batch's windows by recording and subcarrier view,
+then partitions them into overlapping temporal runs. Each run's raw CSI and
+Doppler target slab is copied from its memmap once; individual windows are
+filled from that contiguous in-memory slab. This preserves exact batch
+membership, order, filenames, values, mixed-recording balance, and epoch
+coverage while avoiding one backing-array read per overlapping window.
+
+Batch groups can also be filled concurrently through
+`training.batch_preparation_workers`. On the local PI full-subcarrier memmaps,
+a cache-warm 1,600-window microbenchmark measured approximately 205 windows/s
+with one worker and 420 windows/s with two. Four workers showed no repeatable
+gain over two, so the small-model AR+PC+PI config uses two workers for the
+six-core RTX 2070 host. These are iterator-only measurements, not expected
+end-to-end training rates; the next W&B run must verify GPU utilization,
+`data_wait_fraction`, physical disk reads, RAM pressure, and epoch duration.
+
+The parallel path writes disjoint sample positions in preallocated arrays and
+uses only small per-recording slabs, rather than preparing multiple complete
+545 MB batches concurrently. Twenty-three distillation tests pass, including
+exact tensors for shuffled mixed-recording batches, deterministic ordering,
+single-slab read counts, config validation, checkpoint resume, and the CPU CLI
+smoke test.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier

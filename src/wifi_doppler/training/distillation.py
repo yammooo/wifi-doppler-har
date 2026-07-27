@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -327,6 +328,7 @@ def iter_recording_batches(
     seed: int,
     recordings_per_batch: int = 1,
     window_shuffle_chunk_size: int = 1,
+    batch_preparation_workers: int = 1,
 ) -> Iterator[DistillationBatch]:
     """Yield all windows from bounded pools of backing recordings."""
     if batch_size < 1:
@@ -335,6 +337,8 @@ def iter_recording_batches(
         raise ValueError("recordings_per_batch must be between 1 and batch_size.")
     if window_shuffle_chunk_size < 1:
         raise ValueError("window_shuffle_chunk_size must be >= 1.")
+    if batch_preparation_workers < 1:
+        raise ValueError("batch_preparation_workers must be >= 1.")
 
     by_recording: dict[int, list[tuple[int, int]]] = {}
     for base_idx, window in enumerate(dataset.window_indexes):
@@ -403,7 +407,10 @@ def iter_recording_batches(
                 inputs: np.ndarray | None = None
                 targets: np.ndarray | None = None
                 filenames: list[str] = []
-
+                grouped_items: dict[
+                    tuple[int, int],
+                    list[tuple[int, int, int, int]],
+                ] = {}
                 for sample_idx, (recording_idx, base_idx, view_idx) in enumerate(batch_items):
                     recording = dataset.traces[recording_idx]
                     raw, doppler = loaded[recording_idx]
@@ -411,8 +418,6 @@ def iter_recording_batches(
                     selected_subcarriers = dataset.subcarrier_views[view_idx]
                     raw_start, raw_end = dataset.raw_bounds_for_doppler_window(window.start, window.end)
 
-                    x_complex = raw[:, subcarrier_selectors[view_idx], raw_start:raw_end]
-                    y = doppler[:, window.start:window.end].astype(np.float32, copy=False)
                     expected_input_shape = (
                         doppler.shape[0],
                         len(selected_subcarriers),
@@ -424,12 +429,27 @@ def iter_recording_batches(
                         window.end - window.start,
                         doppler.shape[-1],
                     )
-                    actual_input_shape = (*x_complex.shape, 2)
-                    if actual_input_shape != expected_input_shape or y.shape != expected_target_shape:
+                    raw_slice = slice(raw_start, raw_end).indices(raw.shape[-1])
+                    doppler_slice = slice(window.start, window.end).indices(doppler.shape[1])
+                    actual_input_shape = (
+                        raw.shape[0],
+                        len(selected_subcarriers),
+                        len(range(*raw_slice)),
+                        2,
+                    )
+                    actual_target_shape = (
+                        doppler.shape[0],
+                        len(range(*doppler_slice)),
+                        doppler.shape[-1],
+                    )
+                    if (
+                        actual_input_shape != expected_input_shape
+                        or actual_target_shape != expected_target_shape
+                    ):
                         raise ValueError(
                             f"Incompatible CSI/Doppler window for {recording.filename_stem}: "
                             f"input shape {actual_input_shape}, expected {expected_input_shape}; "
-                            f"target shape {y.shape}, expected {expected_target_shape}; "
+                            f"target shape {actual_target_shape}, expected {expected_target_shape}; "
                             f"raw backing shape {raw.shape}, Doppler backing shape {doppler.shape}; "
                             f"raw bounds [{raw_start}, {raw_end}), "
                             f"Doppler bounds [{window.start}, {window.end}). "
@@ -445,14 +465,81 @@ def iter_recording_batches(
                             dtype=np.float32,
                         )
 
-                    inputs[sample_idx, ..., 0] = x_complex.real
-                    inputs[sample_idx, ..., 1] = x_complex.imag
-                    targets[sample_idx] = y
+                    grouped_items.setdefault((recording_idx, view_idx), []).append(
+                        (sample_idx, base_idx, raw_start, raw_end)
+                    )
                     filenames.append(
                         f"{recording.filename_stem}_d{window.start}-{window.end}_view{view_idx}"
                     )
 
                 assert inputs is not None and targets is not None
+
+                def fill_group(
+                    grouped_item: tuple[
+                        tuple[int, int],
+                        list[tuple[int, int, int, int]],
+                    ],
+                ) -> None:
+                    (recording_idx, view_idx), items = grouped_item
+                    raw, doppler = loaded[recording_idx]
+                    selector = subcarrier_selectors[view_idx]
+                    items.sort(key=lambda item: dataset.window_indexes[item[1]].start)
+                    runs: list[list[tuple[int, int, int, int]]] = []
+                    run_raw_end = -1
+                    run_doppler_end = -1
+                    for item in items:
+                        window = dataset.window_indexes[item[1]]
+                        if (
+                            not runs
+                            or item[2] > run_raw_end
+                            or window.start > run_doppler_end
+                        ):
+                            runs.append([])
+                            run_raw_end = item[3]
+                            run_doppler_end = window.end
+                        else:
+                            run_raw_end = max(run_raw_end, item[3])
+                            run_doppler_end = max(run_doppler_end, window.end)
+                        runs[-1].append(item)
+
+                    for run in runs:
+                        raw_start = min(item[2] for item in run)
+                        raw_end = max(item[3] for item in run)
+                        doppler_start = min(dataset.window_indexes[item[1]].start for item in run)
+                        doppler_end = max(dataset.window_indexes[item[1]].end for item in run)
+                        raw_slab = np.ascontiguousarray(
+                            raw[:, selector, raw_start:raw_end],
+                            dtype=np.complex64,
+                        )
+                        doppler_slab = np.ascontiguousarray(
+                            doppler[:, doppler_start:doppler_end],
+                            dtype=np.float32,
+                        )
+                        for sample_idx, base_idx, sample_raw_start, sample_raw_end in run:
+                            window = dataset.window_indexes[base_idx]
+                            x_complex = raw_slab[
+                                :,
+                                :,
+                                sample_raw_start - raw_start : sample_raw_end - raw_start,
+                            ]
+                            y = doppler_slab[
+                                :,
+                                window.start - doppler_start : window.end - doppler_start,
+                            ]
+                            inputs[sample_idx, ..., 0] = x_complex.real
+                            inputs[sample_idx, ..., 1] = x_complex.imag
+                            targets[sample_idx] = y
+
+                groups = list(grouped_items.items())
+                if batch_preparation_workers == 1 or len(groups) == 1:
+                    for group in groups:
+                        fill_group(group)
+                else:
+                    with ThreadPoolExecutor(
+                        max_workers=min(batch_preparation_workers, len(groups)),
+                    ) as executor:
+                        list(executor.map(fill_group, groups))
+
                 yield DistillationBatch(
                     inputs=torch.from_numpy(inputs),
                     targets=torch.from_numpy(targets),

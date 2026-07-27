@@ -91,6 +91,17 @@ class FakeDataset:
         return start, end
 
 
+class CountingArray:
+    def __init__(self, values: np.ndarray):
+        self.values = values
+        self.shape = values.shape
+        self.reads = 0
+
+    def __getitem__(self, key):
+        self.reads += 1
+        return self.values[key]
+
+
 class OverfitSelectionTests(unittest.TestCase):
     def test_selects_non_overlapping_motion_rich_windows(self) -> None:
         class Recording:
@@ -371,21 +382,65 @@ class DistillationTests(unittest.TestCase):
                 seed=3,
                 recordings_per_batch=2,
                 window_shuffle_chunk_size=2,
+                batch_preparation_workers=2,
             )
         )
         filenames = [filename for batch in batches for filename in batch.filenames]
 
         self.assertEqual(len(filenames), len(dataset))
         self.assertEqual(len(set(filenames)), len(dataset))
+        expected = {}
+        for base_idx, window in enumerate(dataset.window_indexes):
+            recording = dataset.traces[window.recording_idx]
+            raw_start, raw_end = dataset.raw_bounds_for_doppler_window(window.start, window.end)
+            for view_idx, selected in enumerate(dataset.subcarrier_views):
+                x = recording.raw[:, selected, raw_start:raw_end]
+                expected[
+                    f"{recording.filename_stem}_d{window.start}-{window.end}_view{view_idx}"
+                ] = (
+                    np.stack((x.real, x.imag), axis=-1),
+                    recording.doppler[:, window.start:window.end],
+                )
         for batch in batches:
             counts = {
                 name: sum(filename.startswith(name) for filename in batch.filenames)
                 for name in ("recording_a", "recording_b")
             }
             self.assertEqual(counts, {"recording_a": 2, "recording_b": 2})
+            for sample_idx, filename in enumerate(batch.filenames):
+                expected_input, expected_target = expected[filename]
+                torch.testing.assert_close(
+                    batch.inputs[sample_idx],
+                    torch.from_numpy(expected_input),
+                )
+                torch.testing.assert_close(
+                    batch.targets[sample_idx],
+                    torch.from_numpy(expected_target),
+                )
         for recording in dataset.traces:
             self.assertEqual(recording.raw_loads, 1)
             self.assertEqual(recording.doppler_loads, 1)
+
+    def test_recording_iterator_reads_adjacent_windows_as_one_slab(self) -> None:
+        dataset = FakeDataset()
+        for recording in dataset.traces:
+            recording.raw = CountingArray(recording.raw)
+            recording.doppler = CountingArray(recording.doppler)
+
+        batches = list(
+            iter_recording_batches(
+                dataset,
+                batch_size=4,
+                shuffle=False,
+                seed=0,
+                recordings_per_batch=2,
+            )
+        )
+
+        self.assertEqual(sum(len(batch.filenames) for batch in batches), len(dataset))
+        for recording in dataset.traces:
+            self.assertEqual(recording.raw.reads, 1)
+            self.assertEqual(recording.doppler.reads, 1)
 
     def test_mixed_recording_iterator_is_deterministic_for_a_seed(self) -> None:
         def order(seed: int) -> list[str]:
@@ -399,6 +454,7 @@ class DistillationTests(unittest.TestCase):
                     seed=seed,
                     recordings_per_batch=2,
                     window_shuffle_chunk_size=2,
+                    batch_preparation_workers=2,
                 )
                 for filename in batch.filenames
             ]
@@ -432,6 +488,11 @@ class DistillationTests(unittest.TestCase):
         for invalid in (0, config["training"]["batch_size"] + 1, 1.5):
             config["training"]["recordings_per_batch"] = invalid
             with self.assertRaisesRegex(ValueError, "integer between 1 and batch_size"):
+                validate_config(config)
+        config["training"]["recordings_per_batch"] = 1
+        for invalid in (0, 1.5):
+            config["training"]["batch_preparation_workers"] = invalid
+            with self.assertRaisesRegex(ValueError, "batch_preparation_workers"):
                 validate_config(config)
 
     def test_motion_aware_config_validation(self) -> None:
