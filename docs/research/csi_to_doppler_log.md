@@ -1,6 +1,6 @@
 # CSI-to-Doppler Research Log
 
-Last updated: 2026-07-24 (Europe/Rome)
+Last updated: 2026-07-27 (Europe/Rome)
 
 This is the append-only research record for learning the mapping from raw CSI
 to SHARP Doppler maps. Its purpose is to preserve the evidence, reasoning, and
@@ -55,7 +55,7 @@ Entry template:
 - Training CLI: [train_csi_to_doppler.py](../../scripts/train_csi_to_doppler.py)
 - Dataset pairing/windowing: [csi_to_sharp_doppler_dataset.py](../../src/wifi_doppler/data/csi_to_sharp_doppler_dataset.py)
 - Loss and metrics: [distillation.py](../../src/wifi_doppler/training/distillation.py)
-- SHARP target generation: [preprocess_sharp_pi.py](../../src/preprocessing/preprocess_sharp_pi.py)
+- SHARP target generation: [preprocess_sharp.py](../../src/preprocessing/preprocess_sharp.py)
 
 The three architecture-comparison configs still use the
 `motion_weighted_wasserstein` objective analyzed below. They are reproducible
@@ -103,7 +103,11 @@ Dates and times in run names use Europe/Rome local time.
 | 2026-07-23/24 | [`0varxc4c`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/0varxc4c) | full 2D decoder, composite | memmap, batch 256, 8 recordings/batch | finished, 18 epochs | best target loss 0.025239 and MSE 0.007548 at epoch 8; train 78 samples/s |
 | 2026-07-24 | [`cwj0myug`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/cwj0myug) | full 2D decoder, MSE, tiny overfit | 30 carriers, fixed batch of 16 windows | finished, 2,000 steps | final eval MSE 0.00003881; off-center MSE 0.00002805 |
 | 2026-07-24 | [`tm8nyt19`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tm8nyt19) | full 2D decoder, MSE, tiny overfit | 242 carriers, same fixed 16 windows | finished, 2,000 steps | final eval MSE 0.00004194; off-center MSE 0.00003240 |
-| 2026-07-24 | [`tio9b4ad`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tio9b4ad) | 1D U-Net plus spatial 2D head, motion-aware MSE | memmap, batch 256, 8 recordings/batch | running | epochs 2-4 trained at 434-437 samples/s |
+| 2026-07-24 | [`tio9b4ad`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/tio9b4ad) | 1D U-Net plus spatial 2D head, motion-aware MSE | memmap, batch 256, 8 recordings/batch | finished, 13 epochs | best target loss 0.029761; target loss 0.031709 at epoch 13 |
+| 2026-07-27 | [`ehotc8fp`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/ehotc8fp) | shared-antenna spatial-head model, full width, motion-aware MSE | AR+PC+PI, 242 carriers, batch 64 | crashed after epoch 1 | target loss 0.023761; exposed host data starvation |
+| 2026-07-27 | [`6s1lm3dy`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/6s1lm3dy) | shared-antenna spatial-head model, full width, motion-aware MSE | AR+PC+PI, 242 carriers, optimized memmap iterator | crashed after epoch 3 | best target loss 0.020155; advanced-indexing copy remained |
+| 2026-07-27 | [`kbjjrx1c`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/kbjjrx1c) | shared-antenna spatial-head model, small, motion-aware MSE | AR+PC+PI, 242 carriers, batch 448 on RTX 4090 | finished, 1 epoch | target loss 0.033159; exposed per-step CUDA synchronization |
+| 2026-07-27 | [`3wrefrft`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/3wrefrft) | shared-antenna spatial-head model, small, motion-aware MSE | AR+PC+PI, 242 carriers, batch 768 on RTX 4090 | finished, 27 epochs | best target loss 0.018227 at epoch 26; motion remains attenuated and blurred |
 
 The early MSE runs used historical revisions of
 `pi_cross_domain_mse.yaml`. Their resolved configs remain attached to W&B.
@@ -1606,6 +1610,380 @@ eight-batch queue consumes about 20 GiB of host memory and leaves the remainder
 for Python, active recording slabs, and filesystem page cache. This is an
 intentional throughput stress configuration; an out-of-memory result should
 fall back to batch 704 without changing the model or loss.
+
+### 2026-07-27: full-data run `3wrefrft` and end-to-end failure audit
+
+**Run and exact protocol**
+
+[W&B `3wrefrft`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/3wrefrft)
+used
+[`ar_pc_pi_cross_domain_unet1d_spatial_head_shared_antenna_small_motion_aware_full_subcarriers.yaml`](../../configs/csi_to_doppler/ar_pc_pi_cross_domain_unet1d_spatial_head_shared_antenna_small_motion_aware_full_subcarriers.yaml).
+The run finished at epoch 27. It used:
+
+- 233 training recordings from AR, PC, and PI-1a/2a/3a;
+- 121,629 overlapping training windows and all 242 usable subcarriers;
+- PI-4a only for target validation;
+- the 792,609-parameter shared single-antenna temporal U-Net;
+- a 25-bin, four-channel spatial output head;
+- window batch 768, equivalent to 3,072 independent antenna examples per
+  network forward;
+- 12 recordings per pool, BatchNorm, Adam at constant `1e-3`, AMP, and the
+  motion-aware objective.
+
+The W&B pairing reports contain 233 source pairs and 10 PI-4a pairs, with no
+unmatched raw files or Doppler keys. This rejects a missing-file or accidental
+pairing explanation for this run.
+
+**Curve measurements**
+
+| Metric | Epoch 1 | Epoch 16 | Epoch 26 best | Epoch 27 |
+|---|---:|---:|---:|---:|
+| train loss | 0.047992 | 0.028208 | 0.026286 | 0.026379 |
+| train MSE | 0.014760 | 0.007978 | 0.007508 | 0.007562 |
+| train motion MSE | 0.082467 | 0.058114 | 0.053626 | 0.053983 |
+| source-val loss | 0.043444 | 0.029590 | 0.029270 | 0.033952 |
+| target-val loss | 0.034088 | 0.019177 | **0.018227** | 0.020391 |
+| target-val MSE | 0.006533 | 0.004330 | 0.004524 | 0.005432 |
+| target peak-bin MAE | 0.374 | 0.371 | 0.369 | 0.370 |
+
+The training objective did not become perfectly flat at epoch 2; it continued
+to decline slowly. The relevant failure is conditional underfitting: the
+network improves the marginal center/background spectrum while weakly fitting
+the timing, amplitude, and Doppler extent of motion.
+
+At the best epoch-26 checkpoint, the target objective decomposes as:
+
+| Weighted component | Value | Fraction of total |
+|---|---:|---:|
+| full-map MSE | 0.004524 | 24.8% |
+| motion MSE | 0.009027 | 49.5% |
+| background leakage | 0.001723 | 9.5% |
+| motion Wasserstein | 0.002954 | 16.2% |
+
+Motion MSE is already the largest term. The missing peaks are therefore not
+explained by coefficient `0.25` making motion numerically irrelevant.
+
+Target peak-bin MAE is almost constant because the stationary center bin is
+normally the global maximum. It does not measure whether off-center motion is
+present.
+
+**Heatmap progression**
+
+All logged fixed examples were inspected from epochs 1 through 27, not only
+the two final screenshots.
+
+- The prediction becomes a stable center ridge during the first epochs.
+- The fixed AR training example `AR-9b_J1_d5190-5530_view0` never recovers the
+  narrow off-center events, including the clear antenna-2 events.
+- The second fixed training example is nearly stationary and is reproduced
+  much more closely. This makes the image set itself imbalanced toward the
+  easy marginal solution.
+- Source-validation examples eventually show broad responses at approximately
+  some correct event times. Their width and amplitude remain wrong.
+- PI-4a predictions contain faint responses at some target event times, but
+  strong target spikes are usually attenuated below their correct amplitude
+  and spread into haze.
+- This behavior appears early and persists; it is not a late-epoch collapse.
+
+The images therefore refine the phrase "constant prediction." The model is not
+strictly input-independent. It learns a weak motion detector on some windows,
+then expresses it through an over-smoothed, poorly calibrated spectrum.
+
+**Matched baselines and support diagnostics**
+
+An exact window-weighted shared-antenna PI-1a/2a/3a mean spectrum was evaluated
+on PI-4a validation. With globally aggregated reductions it obtains:
+
+```text
+loss=0.036725
+MSE=0.005682
+motion MSE=0.093611
+background leakage=0.014111
+Wasserstein=0.082260
+```
+
+Thus `3wrefrft` beats a literal constant spectrum on aggregate. The remaining
+problem is not equivalent to producing the exact training mean.
+
+For a deterministic sample of 100 PI-4a validation windows, three predictors
+were compared with the same batches and thresholds:
+
+| Predictor | Loss | MSE | Active-frame recall at 0.2 | Precision | Motion-energy correlation | Predicted/target motion mass |
+|---|---:|---:|---:|---:|---:|---:|
+| PI train mean | 0.02697 | 0.00535 | 0.0% | 0.0% | undefined | 0.97 |
+| affine phase correction + fixed STFT | 0.02210 | 0.00496 | 35.0% | 88.4% | 0.769 | 0.62 |
+| epoch-26 model | **0.01872** | **0.00433** | **61.2%** | 46.2% | 0.768 | 1.37 |
+
+An active antenna-frame has a target maximum above `0.2` outside bins 45-55.
+The model detects more events than the deterministic baseline, but creates
+many more false active frames and excess diffuse mass. This is consistent
+with the heatmaps: weak event timing is present, while support, sharpness, and
+amplitude calibration are poor.
+
+On the exact displayed PI window, the final model detects only 3 of 46 active
+antenna-frames at the same threshold. Performance is therefore strongly
+recording- and antenna-dependent, which aggregate loss hides.
+
+**What the raw CSI contains**
+
+The stored input is not simply a noisy version of the target image. SHARP's
+teacher performs the following nontrivial deterministic map separately for
+each antenna:
+
+1. Normalize each raw packet over subcarrier magnitude.
+2. Solve a complex LASSO over a delay dictionary using approximately every
+   second usable subcarrier.
+3. Select the strongest reconstructed path and use its conjugate as a packet
+   phase reference.
+4. Reconstruct the CFR, unwrap phase, and remove packet-dependent affine phase
+   error across subcarriers.
+5. For every target frame, apply a Hann window to 31 sanitized packets, take a
+   100-point FFT over time, square magnitude, and sum over subcarriers.
+6. FFT-shift, normalize each 100-bin frame by its own maximum, and hard-floor
+   values below `10^-1.2`.
+
+The LASSO, strongest-path `argmax`, sequential phase unwrapping, framewise max,
+and hard floor make the teacher nonlinear and partly discontinuous.
+
+On the displayed PI window, applying the 31-sample STFT directly to normalized
+raw complex CSI gives MSE `0.1731` and visually noise-like Doppler power across
+the spectrum. Amplitude-only and adjacent-subcarrier conjugate STFTs collapse
+to the center ridge and miss motion.
+
+A much simpler deterministic transformation is unexpectedly informative:
+unwrap raw phase across subcarriers, fit and remove each packet's affine phase
+difference relative to the first packet in the 370-sample window, and then
+apply SHARP's fixed STFT/normalization. On the displayed window this obtains
+MSE `0.001316` and motion-energy correlations of `0.849`, `0.933`, `0.356`,
+and `0.359` over the four antennas. It visibly recovers many target lobes.
+
+This one-window result is not a replacement for the full SHARP algorithm, but
+the 100-window measurements above confirm that it is a meaningful baseline.
+It also shows that explicit phase invariance is substantially easier to learn
+around than asking a generic U-Net to discover the full radio model.
+
+**Target distribution and domain mixture**
+
+All 972 available Doppler stream files were scanned, covering approximately
+26.6 million antenna-frames. With bins 45-55 excluded:
+
+| Domain | Antenna-frames | Frames with off-center max > 0.2 | Mean max off-center |
+|---|---:|---:|---:|
+| AR | 12.39M | 21.9% | 0.149 |
+| PC | 7.01M | 43.5% | 0.219 |
+| PI | 7.19M | 24.8% | 0.147 |
+
+Across all domains, only 28.4% of frames exceed `0.2` and 16.5% exceed `0.4`.
+Approximately 16.3% of total target power lies above the floor outside the
+center band. Most pixel and frame gradients therefore describe stationary
+background.
+
+PC is not drawn from the same target marginal: it is almost twice as often
+strongly active and its stationary center profile is broader. PI target
+validation can have lower loss than the mixed training set because it is an
+easier distribution, not because cross-domain generalization is solved.
+
+The four antennas create another imbalance. A dynamic recording often has a
+strong event on only one or two antennas. The shared-antenna implementation is
+still the correct weight-sharing choice, but event balancing must operate on
+antenna-frames or motion support, not only on recording windows.
+
+AR/PC targets were recomputed with the current preprocessing code, while PI
+targets came from the older `doppler_traces_pi` set. Before a definitive mixed
+run, PI must either be recomputed with the same revision and parameters or
+numerically checked for exact pipeline parity. Otherwise the model is being
+asked to fit possible generator-version differences in addition to domain
+differences.
+
+**Data loader and temporal geometry**
+
+Code inspection supports the dataset pairing and source-target slice:
+
+```text
+target frame t -> raw packets 800+t through 800+t+30
+340 target frames -> 370 raw packets
+```
+
+The split guard also prevents adjacent train/validation windows from sharing
+the 31-packet teacher context. No evidence currently identifies the memmap
+iterator, real/imag split, antenna reshape, or target slicing as corrupt.
+
+There is, however, a model-side temporal alignment error. After producing 370
+temporal features, every implemented model calls interpolation to resize time
+to 340. With `align_corners=False`, output index `t` samples approximately:
+
+```text
+(t + 0.5) * 370 / 340 - 0.5
+```
+
+The natural center of target frame `t` is raw index `t+15`. The discrepancy is
+about `-15` packets at the beginning, zero near the middle, and `+15` at the
+end. A translation-equivariant convolutional network cannot cleanly undo this
+position-dependent warp. The correct operation after same-length temporal
+processing is a fixed crop `[..., 15:-15]`, or an explicitly valid
+31-sample front end. Tiny-set memorization did not validate this alignment
+because a high-capacity network can memorize the fixed position warp.
+
+**Architecture audit**
+
+The current model has several mismatches with the teacher:
+
+1. **Frequency information is destroyed too early.** For one antenna, the
+   ordered `[242 subcarriers, real/imag]` input becomes 484 Conv1d channels.
+   A kernel-1 projection immediately compresses 484 values to 64, followed by
+   BatchNorm and ReLU, before any frequency-axis or phase-aware operation.
+   SHARP's difficult step is precisely nonlinear path separation across
+   subcarriers. Deeper temporal layers cannot recover information removed by
+   this first projection.
+2. **The network has no complex or phase-error inductive bias.** Real and
+   imaginary inputs are retained, but arbitrary real Conv1d weights are not
+   equivariant to packet-wise complex rotations or affine phase slopes.
+3. **The output head is a spectral low-pass bottleneck.** It projects 64
+   temporal channels to only `4 x 25` coarse spectral features, bilinearly
+   upsamples 25 bins to 100, and applies two small 3x3 convolutions. The whole
+   head has only about 6.7k parameters. Narrow one-to-three-bin peaks are
+   difficult to synthesize from this representation.
+4. **Time is warped instead of valid-cropped.** This directly smears transient
+   alignment as described above.
+5. **The temporal receptive field is already larger than the 31-packet
+   teacher window.** Adding more generic temporal residual blocks is not the
+   first fix.
+6. **Capacity is secondary to representation.** The small model has 0.79M
+   parameters and may be too small for all domains, but the prior 2.4M full-2D
+   model also learned a center-biased shortcut. The 16-window overfit tests
+   prove memorization, not held-out reconstruction.
+
+**Loss audit**
+
+The motion-aware loss improved materially over the previous SmoothL1
+objective, but it cannot repair missing conditional features:
+
+- Full-map MSE still has a conditional-mean optimum under uncertain sparse
+  events.
+- Background leakage applies a constant downward gradient at every exact-floor
+  pixel. Under location uncertainty, this makes conservative smooth output
+  safer than a sharp but slightly misplaced peak.
+- Wasserstein computes `relu(prediction-floor)`. A prediction below the floor
+  receives no Wasserstein gradient that could create missing active mass.
+- Wasserstein normalizes each spectrum, so it constrains location only after
+  mass exists and cannot recover amplitude.
+- The target is normalized independently per frame. A center ridge usually
+  reaches one, while off-center motion occupies few bins, so global map
+  reductions remain highly imbalanced.
+
+Raising `motion_mse_weight` alone is not justified: its weighted term is
+already half the best target loss. Multi-resolution STFT, SSIM, or image
+gradient losses may later refine shape, but none can reconstruct event timing
+that the front end discards or warps.
+
+A future direct-map loss should separate two tasks:
+
+1. off-center support/event detection, using event-balanced focal BCE,
+   Tversky, or Dice-style supervision;
+2. amplitude and shape regression only where motion is present, using MSE or
+   log-amplitude error plus a differentiable motion-only transport term.
+
+Output should also be constrained to the physical target range without a dead
+`clamp_min` path. Background suppression should be introduced only after
+motion recall is established.
+
+**Training and normalization audit**
+
+- Batch 768 was selected to fill the RTX 4090, not to optimize learning. After
+  antenna flattening it produces 3,072 single-antenna examples and only about
+  172 optimizer updates per epoch. The whole run made 4,640 updates.
+- Rare, localized motion gradients are averaged with thousands of mostly
+  stationary antenna-frames in every step.
+- Adjacent windows overlap by 91.2%; 121,629 windows do not represent 121,629
+  independent examples.
+- BatchNorm running statistics are vulnerable to recording pools. With 233
+  recordings and pools of 12, the final pool has only five recordings.
+  Momentum `0.1` gives those final batches disproportionate influence, and the
+  identity of the last pool changes every epoch. This is consistent with the
+  abrupt source/target validation spikes despite smooth training curves.
+- There is no learning-rate schedule. Constant `1e-3` is not proven wrong, but
+  tuning it before correcting representation and geometry would not isolate
+  the main failure.
+- Combining AR, PC, and PI is not intrinsically invalid because the physical
+  map should be shared. It is currently a confound because target marginals,
+  generator provenance, and BatchNorm statistics differ. Failure on a fixed
+  training example shows that domain shift is not the sole cause.
+
+For the next diagnostic, use event-balanced batches of roughly 64-128 windows
+(256-512 antenna examples), GroupNorm or LayerNorm, and one source domain.
+GPU saturation is not an optimization objective when it reduces update count
+and motion diversity per gradient.
+
+**Comparison with successful literature**
+
+- [SHARP](https://arxiv.org/abs/2103.09924) makes phase cleaning the central
+  signal-processing contribution, separates sparse paths, references the
+  strongest path, and only then computes micro-Doppler. Its neural network is
+  a classifier over Doppler, not a generic raw-CSI-to-Doppler image translator.
+- [Widar3.0](https://cswu.me/papers/mobisys19_widar3_paper.pdf) explicitly
+  derives a physics-based body-coordinate velocity profile before learning.
+  Its paper reports substantially poorer cross-environment performance from
+  raw CSI and ordinary Doppler/DFS than from the derived invariant feature.
+- [SLNet](https://www.usenix.org/system/files/nsdi23-yang-zheng.pdf) keeps
+  STFT as an explicit front end, uses complex-valued spectral enhancement, and
+  fuses multiple time-frequency resolutions. It is signal-processing/learning
+  co-design, not an unconstrained flatten-and-regress architecture.
+- [Optimal preprocessing of WiFi CSI for sensing
+  applications](https://arxiv.org/abs/2307.12126) models receiver gain, timing,
+  and common phase errors explicitly and shows that they materially hinder
+  sensing.
+- [LISTA](https://icml.cc/2010/papers/449.pdf) is the established pattern for
+  accelerating LASSO-like sparse inference: unroll a small fixed number of
+  shrinkage iterations and learn their parameters while retaining the
+  dictionary/data-consistency structure.
+
+The common lesson is not simply "use a larger CNN." Successful systems expose
+the physical frequency/time structure, explicitly handle complex phase
+nuisances, and learn around known transforms.
+
+**Revised primary direction**
+
+The current direct U-Net remains a useful negative baseline, but should not be
+scaled further in its present form. The preferred model is a hybrid:
+
+1. Preserve input as `[batch*antenna, 2, subcarrier, time]`.
+2. Apply a deterministic phase-error correction baseline first. If it is not
+   sufficiently faithful, replace or augment it with a frequency-aware
+   complex network or an unrolled LISTA block over SHARP's delay dictionary.
+3. Predict an intermediate sanitized complex CFR or phase-correction
+   parameters, rather than 34,000 normalized image pixels directly.
+4. Apply the known 31-packet Hann STFT, 100-point FFT, magnitude square,
+   subcarrier sum, FFT shift, framewise normalization, and floor as fixed
+   differentiable layers.
+5. Use the exact valid temporal geometry; do not interpolate 370 positions to
+   340.
+
+This decomposition makes the learned task "approximate expensive phase/path
+sanitization," which matches the original research question. The cheap and
+known Doppler transform should not be relearned.
+
+**Decision and next experiment sequence**
+
+1. Do not continue `3wrefrft`; preserve epoch 26 as the direct-map baseline.
+2. Recompute PI with the same generator revision or prove exact parity against
+   current AR/PC targets.
+3. Evaluate the deterministic affine phase-correction baseline on all splits
+   and through the frozen original SHARP classifier. This may already provide
+   the required speed/accuracy trade-off without a neural surrogate.
+4. Add motion-support precision/recall/AUPRC, active-energy recall,
+   false-active mass, temporal motion-energy correlation, centroid/quantile
+   error, and metrics broken down by domain, activity, recording, and antenna.
+5. Correct the 15/15 temporal crop and build a motion-stratified,
+   same-recording held-out benchmark. Tiny-set memorization is no longer an
+   acceptance test.
+6. Build the hybrid sanitized-CFR model. Start on one coherent domain and
+   event-balanced batches; add mixed domains only after held-out source
+   reconstruction is demonstrated.
+7. For final utility, run both:
+   - the frozen SHARP classifier trained on teacher maps and evaluated on
+     generated maps, testing representation fidelity;
+   - a classifier retrained on generated maps, testing whether the surrogate
+     remains useful despite distribution shift.
 
 ## Open Paper-Level Questions
 
