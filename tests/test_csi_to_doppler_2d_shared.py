@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
 
 from scripts.train_csi_to_doppler import validate_config
 from wifi_doppler.models.csi_to_doppler_2d_shared import (
+    FrequencyPool,
     SharedAntennaCsiToDopplerUNet2D,
 )
 from wifi_doppler.models.csi_to_doppler_builders import (
@@ -111,6 +112,11 @@ class SharedAntennaUNet2DTests(unittest.TestCase):
             model.grid_projection.out_channels,
             model.decoder_channels * model.output_doppler_bins,
         )
+        for collapse in (model.collapse1, model.collapse2, model.collapse3):
+            self.assertIsInstance(collapse, FrequencyPool)
+            self.assertIsInstance(collapse.projection, torch.nn.Conv1d)
+            self.assertEqual(collapse.projection.kernel_size, (1,))
+            self.assertEqual(collapse.projection.groups, 1)
         with torch.no_grad():
             output = model(torch.randn(1, 2, 7, 11, 2))
         self.assertEqual(tuple(output.shape), (1, 2, 9, 12))

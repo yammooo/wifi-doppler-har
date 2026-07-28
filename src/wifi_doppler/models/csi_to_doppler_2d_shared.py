@@ -62,22 +62,21 @@ class ResidualGroupBlock2d(torch.nn.Module):
         return x + h
 
 
-class FrequencyCollapse(torch.nn.Module):
-    """Learn one subcarrier weighting per feature channel."""
+class FrequencyPool(torch.nn.Module):
+    """Average frequency features, then mix channels."""
 
-    def __init__(self, channels: int, num_subcarriers: int):
+    def __init__(self, channels: int):
         super().__init__()
-        self.projection = torch.nn.Conv2d(
+        self.projection = torch.nn.Conv1d(
             channels,
             channels,
-            kernel_size=(num_subcarriers, 1),
-            groups=channels,
+            kernel_size=1,
             bias=False,
         )
         self.norm = torch.nn.GroupNorm(_group_count(channels), channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.relu(self.norm(self.projection(x).squeeze(2)), inplace=True)
+        return F.relu(self.norm(self.projection(x.mean(dim=2))), inplace=True)
 
 
 class SharedAntennaCsiToDopplerUNet2D(torch.nn.Module):
@@ -122,10 +121,6 @@ class SharedAntennaCsiToDopplerUNet2D(torch.nn.Module):
         self.temporal_context = temporal_context
         self.decoder_channels = decoder_channels
 
-        level1_subcarriers = (num_subcarriers + 3) // 4
-        level2_subcarriers = (level1_subcarriers + 1) // 2
-        level3_subcarriers = (level2_subcarriers + 1) // 2
-
         self.input_stem = ConvGnRelu2d(
             input_parts,
             base_channels,
@@ -154,9 +149,9 @@ class SharedAntennaCsiToDopplerUNet2D(torch.nn.Module):
             ResidualGroupBlock2d(bottleneck_channels, temporal_dilation=2),
         )
 
-        self.collapse1 = FrequencyCollapse(base_channels, level1_subcarriers)
-        self.collapse2 = FrequencyCollapse(mid_channels, level2_subcarriers)
-        self.collapse3 = FrequencyCollapse(bottleneck_channels, level3_subcarriers)
+        self.collapse1 = FrequencyPool(base_channels)
+        self.collapse2 = FrequencyPool(mid_channels)
+        self.collapse3 = FrequencyPool(bottleneck_channels)
 
         self.grid_projection = torch.nn.Conv1d(
             bottleneck_channels,
