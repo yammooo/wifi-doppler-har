@@ -142,20 +142,26 @@ def validate_config(config: dict[str, Any]) -> None:
         "unet1d_spatial_head",
         "unet1d_spatial_head_shared_antenna",
         "unet2d_decoder",
+        "unet2d_shared_antenna_full_resolution",
     }:
         raise ValueError(
             "model.architecture must be unet1d_legacy, unet1d_spatial_head, "
-            "unet1d_spatial_head_shared_antenna, or unet2d_decoder."
+            "unet1d_spatial_head_shared_antenna, unet2d_decoder, or "
+            "unet2d_shared_antenna_full_resolution."
         )
-    if architecture == "unet2d_decoder":
+    if architecture in {
+        "unet2d_decoder",
+        "unet2d_shared_antenna_full_resolution",
+    }:
         decoder_channels = config["model"].get("decoder_channels")
-        coarse_bins = config["model"].get("decoder_coarse_bins")
         if (
             not isinstance(decoder_channels, int)
             or isinstance(decoder_channels, bool)
             or decoder_channels < 1
         ):
             raise ValueError("model.decoder_channels must be an integer >= 1.")
+    if architecture == "unet2d_decoder":
+        coarse_bins = config["model"].get("decoder_coarse_bins")
         if (
             not isinstance(coarse_bins, int)
             or isinstance(coarse_bins, bool)
@@ -163,6 +169,19 @@ def validate_config(config: dict[str, Any]) -> None:
         ):
             raise ValueError(
                 "model.decoder_coarse_bins must be an integer between 1 and output_doppler_bins."
+            )
+    if architecture == "unet2d_shared_antenna_full_resolution":
+        temporal_context = config["model"].get("temporal_context")
+        if (
+            not isinstance(temporal_context, int)
+            or isinstance(temporal_context, bool)
+            or temporal_context < 1
+            or temporal_context % 2 == 0
+        ):
+            raise ValueError("model.temporal_context must be a positive odd integer.")
+        if temporal_context != config["data"]["doppler_sample_length"]:
+            raise ValueError(
+                "model.temporal_context must match data.doppler_sample_length."
             )
     if architecture in {
         "unet1d_spatial_head",
