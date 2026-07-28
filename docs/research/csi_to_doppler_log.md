@@ -2080,6 +2080,23 @@ validation, and approximately 217 target validation/test windows. The earlier
 config therefore uses batch 32, corresponding to 16 rich and 16 ordinary
 windows and an effective shared-antenna network batch of 128.
 
+**Run measurement:** W&B run
+[`xhg1tsta`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/xhg1tsta)
+completed epoch 1 at 24.46 train windows/s and 239 optimizer steps. Sampled
+GPU utilization averaged 30.9% and alternated between 100% compute bursts and
+zero; GPU allocation peaked near 71%, while total CPU averaged 11.5% and
+process RAM about 4.6 GiB. This identifies batch preparation as the immediate
+bottleneck. The config raises preparation workers from four to eight, matching
+the eight-recording pool; larger prefetch alone cannot accelerate a producer
+that is not filling the queue.
+
+**Correction after warm-up:** Do not stop `xhg1tsta`. Epoch 2 train throughput
+rose to 49.67 windows/s, twice epoch 1. GPU utilization averaged 81.2% from
+runtime 400-631 seconds, versus 23.9% during the first 400 seconds. The initial
+chart was dominated by motion-profile construction, cold filesystem pages,
+and the first pass through the memmaps. Eight preparation workers remain a
+reasonable next-run setting, but are not a reason to restart this run.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
