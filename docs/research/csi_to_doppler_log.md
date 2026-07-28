@@ -1,6 +1,6 @@
 # CSI-to-Doppler Research Log
 
-Last updated: 2026-07-27 (Europe/Rome)
+Last updated: 2026-07-28 (Europe/Rome)
 
 This is the append-only research record for learning the mapping from raw CSI
 to SHARP Doppler maps. Its purpose is to preserve the evidence, reasoning, and
@@ -52,6 +52,7 @@ Entry template:
   - [1D U-Net with spatial 2D head](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head.yaml)
   - [Full 2D decoder](../../configs/csi_to_doppler/pi_cross_domain_unet2d_decoder.yaml)
   - [1D U-Net with spatial 2D head and motion-aware loss](../../configs/csi_to_doppler/pi_cross_domain_unet1d_spatial_head_motion_aware.yaml)
+  - [AR motion-balanced full-resolution model](../../configs/csi_to_doppler/ar_motion_balanced_unet2d_shared_antenna_full_resolution.yaml)
 - Training CLI: [train_csi_to_doppler.py](../../scripts/train_csi_to_doppler.py)
 - Dataset pairing/windowing: [csi_to_sharp_doppler_dataset.py](../../src/wifi_doppler/data/csi_to_sharp_doppler_dataset.py)
 - Loss and metrics: [distillation.py](../../src/wifi_doppler/training/distillation.py)
@@ -1984,6 +1985,96 @@ known Doppler transform should not be relearned.
      generated maps, testing representation fidelity;
    - a classifier retrained on generated maps, testing whether the surrogate
      remains useful despite distribution shift.
+
+## 2026-07-28
+
+### AR motion-balanced full-resolution experiment
+
+**Question**
+
+Can the corrected full-resolution architecture reconstruct held-out AR motion
+when sparse active windows are no longer overwhelmed by stationary windows?
+
+**Run/config/code**
+
+- W&B run: not started.
+- Config:
+  [`ar_motion_balanced_unet2d_shared_antenna_full_resolution.yaml`](../../configs/csi_to_doppler/ar_motion_balanced_unet2d_shared_antenna_full_resolution.yaml)
+- Model: `unet2d_shared_antenna_full_resolution`.
+- Sampler and metrics:
+  [`distillation.py`](../../src/wifi_doppler/training/distillation.py).
+
+**Change**
+
+- **Decision:** Use all 18 recomputed AR scenarios for training and source
+  validation. Keep `AR-1a/1b/1c` as target validation and final test because
+  those scenarios align with the original SHARP classifier workflow.
+- **Decision:** Use all 242 subcarriers, exact 31-packet temporal alignment,
+  shared per-antenna weights, GroupNorm, and direct 100-bin 2D decoding.
+- **Decision:** Increase stride from 30 to 170. This cuts redundant overlap
+  from 91.2% to 50% and makes window counts less misleading.
+- **Decision:** Score a window by the fraction of antenna-time frames whose
+  maximum outside bins 45-55 exceeds 0.2. Per recording, the top quartile is
+  motion-rich.
+- **Decision:** Every epoch includes each rich window once and an equal number
+  of ordinary windows without replacement. Ordinary coverage rotates
+  deterministically across epochs. Full batches contain eight rich and eight
+  ordinary windows.
+- **Decision:** Keep the existing motion-aware loss unchanged. This isolates
+  architecture and sampling from loss-weight changes.
+- **Decision:** Validation and test remain unbalanced and exhaustive; balancing
+  them would hide real-distribution performance.
+
+**Measurements and observations**
+
+- **Measurement:** Implementation tests pass: deterministic rich selection,
+  ordinary rotation, 50/50 batches, motion support metrics, unchanged
+  evaluation coverage, CPU training, and checkpoint resume.
+- **Measurement:** The full AR manifest contains 164 recordings across 18
+  scenarios. The configured split produces 10,684 train windows, 3,377 source
+  validation windows, and 487 windows in each classifier-compatible target
+  validation/test split.
+- **Measurement:** Per-recording top-quartile selection marks 2,747 train
+  windows rich. Each epoch therefore uses 2,747 rich and 2,747 ordinary
+  windows: 5,494/10,684 windows (51.4%). The 7,937 ordinary windows complete a
+  deterministic rotation in about 2.9 epochs; no ordinary window is
+  permanently excluded.
+- **Measurement:** Motion-score quantiles over all train windows are
+  `0, 0, 0.0103, 0.0662, 0.2884, 0.9603, 0.9956, 1.0` at
+  `0/10/25/50/75/90/99/100%`. The fraction scoring above 0.1 is 43.1%.
+- **Observation:** Per-recording ranking is a mild rather than absolute motion
+  rebalance: 55.4% of rich windows and 38.8% of ordinary windows score above
+  0.1. Ten of 164 recordings have a zero rich cutoff. This occurs because AR
+  contains both nearly stationary recordings and recordings active for most
+  of their duration. The rule preserves recording/activity coverage but
+  “rich” means relative to that recording, not necessarily objectively active.
+- **Measurement:** New logged metrics are off-center MSE, active-frame
+  precision/recall/F1, and predicted-to-target off-center motion-mass ratio.
+- **Measurement:** W&B heatmaps now use fixed motion-rich references for train,
+  source validation, and target validation.
+- **Observation:** There is no model result yet. This entry documents the
+  hypothesis and acceptance gate, not evidence that balancing works.
+
+**Decision**
+
+Use this as the final direct-map diagnostic. Good held-out peaks justify the
+frozen SHARP classifier test. Training success with held-out failure points to
+representation generalization and explicit phase correction. A persistent
+center ridge even on the fixed rich training references terminates further
+direct-map CNN tuning.
+
+**Next**
+
+Run the config unchanged, attach the W&B run ID here, and evaluate the support
+metrics and fixed heatmaps before interpreting global MSE.
+
+**2026-07-28 pre-run correction:** The final config expands training to
+0-80% of every AR recording and uses batch 64. Source validation is all AR at
+80-90%; target validation is `AR-1a/1b/1c` at 80-90%; final test is the same
+three scenarios at 90-100%. This produces 14,342 train, 1,538 source
+validation, and approximately 217 target validation/test windows. The earlier
+10,684-window and 51.4%-per-epoch measurements describe the superseded
+0-60% training split; the sampler behavior is otherwise unchanged.
 
 ## Open Paper-Level Questions
 

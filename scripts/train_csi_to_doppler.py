@@ -228,6 +228,41 @@ def validate_config(config: dict[str, Any]) -> None:
         or batch_preparation_workers < 1
     ):
         raise ValueError("training.batch_preparation_workers must be an integer >= 1.")
+    sampling = config["training"].get("sampling", {"mode": "all"})
+    if not isinstance(sampling, dict):
+        raise ValueError("training.sampling must be a mapping.")
+    if sampling.get("mode", "all") not in {"all", "motion_stratified"}:
+        raise ValueError("training.sampling.mode must be all or motion_stratified.")
+    if sampling.get("mode") == "motion_stratified":
+        if config["data"].get("storage") != "memmap":
+            raise ValueError("Motion-stratified sampling requires data.storage=memmap.")
+        if config["training"]["batch_size"] % 2:
+            raise ValueError("Motion-stratified sampling requires an even batch_size.")
+        active_threshold = sampling.get("active_threshold", 0.2)
+        if (
+            isinstance(active_threshold, bool)
+            or not isinstance(active_threshold, (int, float))
+            or not 0 <= active_threshold <= 1
+        ):
+            raise ValueError("training.sampling.active_threshold must be in [0, 1].")
+        rich_quantile = sampling.get("rich_quantile", 0.75)
+        if (
+            isinstance(rich_quantile, bool)
+            or not isinstance(rich_quantile, (int, float))
+            or not 0 < rich_quantile < 1
+        ):
+            raise ValueError("training.sampling.rich_quantile must be in (0, 1).")
+        sampling_center_half_width = sampling.get("center_half_width", 5)
+        if (
+            not isinstance(sampling_center_half_width, int)
+            or isinstance(sampling_center_half_width, bool)
+            or not 0
+            <= sampling_center_half_width
+            < config["model"]["output_doppler_bins"] // 2
+        ):
+            raise ValueError(
+                "training.sampling.center_half_width must leave off-center Doppler bins."
+            )
     if config["training"]["early_stopping_patience"] < 1:
         raise ValueError("training.early_stopping_patience must be >= 1.")
     if config["training"]["log_every_steps"] < 1:
@@ -481,8 +516,11 @@ def main() -> None:
         csi_to_doppler_model_metadata,
     )
     from wifi_doppler.training.distillation import (
+        build_motion_epoch_schedule,
+        build_motion_sampling_profile,
         iter_recording_batches,
         load_training_checkpoint,
+        motion_sampling_report,
         move_batches_to_device,
         prefetch_batches,
         run_distillation_epoch,
@@ -531,6 +569,24 @@ def main() -> None:
     print("building paired datasets...")
     datasets = build_datasets(config, ("train", "source_val", "target_val"))
     data_metadata = dataset_metadata(datasets)
+    sampling_config = config["training"].get("sampling", {"mode": "all"})
+    train_motion_profile = None
+    sampling_summary = None
+    if sampling_config.get("mode", "all") == "motion_stratified":
+        print("scoring training windows for motion-stratified sampling...")
+        train_motion_profile = build_motion_sampling_profile(
+            datasets["train"],
+            active_threshold=float(sampling_config.get("active_threshold", 0.2)),
+            center_half_width=int(sampling_config.get("center_half_width", 5)),
+            rich_quantile=float(sampling_config.get("rich_quantile", 0.75)),
+        )
+        sampling_report = motion_sampling_report(datasets["train"], train_motion_profile)
+        save_json(training_dir / "sampling_profile.json", sampling_report)
+        sampling_summary = {
+            key: value
+            for key, value in sampling_report.items()
+            if key != "window_scores"
+        }
     save_json(training_dir / "pairing_reports.json", data_metadata)
     for name, metadata in data_metadata.items():
         print(f"{name}: {metadata['recordings']} recordings, {metadata['windows']} windows")
@@ -577,6 +633,16 @@ def main() -> None:
             )
         wandb_run.summary["model/trainable_parameters"] = count_trainable_parameters(model)
         wandb_run.config.update({"dataset_metadata": data_metadata}, allow_val_change=True)
+        if sampling_summary is not None:
+            wandb_run.config.update(
+                {"motion_sampling": sampling_summary},
+                allow_val_change=True,
+            )
+            wandb_run.save(
+                str(training_dir / "sampling_profile.json"),
+                base_path=str(run_dir),
+                policy="now",
+            )
         for split_name, metadata in data_metadata.items():
             wandb_run.summary[f"data/{split_name}_windows"] = metadata["windows"]
 
@@ -600,10 +666,27 @@ def main() -> None:
     min_delta = float(config["training"]["early_stopping_min_delta"])
     early_stopping_metric = str(config["training"].get("early_stopping_metric", "mse"))
     loss_options = config["training"].get("loss_options", {})
+    metric_options = {
+        "motion_floor": float(loss_options.get("floor", 10**-1.2)),
+        "motion_threshold": float(sampling_config.get("active_threshold", 0.2)),
+        "center_half_width": int(
+            sampling_config.get(
+                "center_half_width",
+                loss_options.get("center_half_width", 5),
+            )
+        ),
+    }
     latest_path = training_dir / "latest.pt"
     best_path = run_dir / "model.pt"
 
-    def batches_for(split_name: str, *, shuffle: bool, batch_seed: int):
+    def batches_for(
+        split_name: str,
+        *,
+        shuffle: bool,
+        batch_seed: int,
+        base_indexes=None,
+        motion_rich_indexes=None,
+    ):
         host_batches = iter_recording_batches(
             datasets[split_name],
             batch_size=batch_size,
@@ -616,6 +699,8 @@ def main() -> None:
             batch_preparation_workers=int(
                 config["training"].get("batch_preparation_workers", 1)
             ),
+            base_indexes=base_indexes,
+            motion_rich_indexes=motion_rich_indexes,
         )
         host_batches = prefetch_batches(
             host_batches,
@@ -628,22 +713,33 @@ def main() -> None:
             cuda_prefetch=bool(config["training"].get("cuda_prefetch", True)),
         )
 
-    train_reference_batch = None
+    reference_batches = {}
     if wandb_run is not None and max_examples > 0:
-        reference_batches = iter_recording_batches(
-            datasets["train"],
-            batch_size=max_examples,
-            shuffle=True,
-            seed=seed,
-            recordings_per_batch=min(
-                max_examples,
-                int(config["training"].get("recordings_per_batch", 1)),
-            ),
-        )
-        try:
-            train_reference_batch = next(reference_batches)
-        finally:
-            reference_batches.close()
+        reference_profiles = {"train": train_motion_profile}
+        for split_name in ("source_val", "target_val"):
+            reference_profiles[split_name] = build_motion_sampling_profile(
+                datasets[split_name],
+                active_threshold=metric_options["motion_threshold"],
+                center_half_width=metric_options["center_half_width"],
+                rich_quantile=float(sampling_config.get("rich_quantile", 0.75)),
+            )
+        if reference_profiles["train"] is None:
+            reference_profiles["train"] = build_motion_sampling_profile(
+                datasets["train"],
+                active_threshold=metric_options["motion_threshold"],
+                center_half_width=metric_options["center_half_width"],
+                rich_quantile=float(sampling_config.get("rich_quantile", 0.75)),
+            )
+        for split_name, profile in reference_profiles.items():
+            top_indexes = np.argsort(-profile.scores, kind="stable")[:max_examples]
+            reference_batches[split_name] = tuple(
+                batches_for(
+                    split_name,
+                    shuffle=False,
+                    batch_seed=seed,
+                    base_indexes=top_indexes.tolist(),
+                )
+            )
 
     try:
         for epoch in range(start_epoch, int(config["training"]["epochs"]) + 1):
@@ -654,30 +750,83 @@ def main() -> None:
                 if wandb_run is not None and step % log_every == 0:
                     wandb_run.log({**prefix_metrics("train_batch", metrics), "global_step": step})
 
+            motion_schedule = None
+            sampling_epoch_report = None
+            if train_motion_profile is not None:
+                motion_schedule = build_motion_epoch_schedule(
+                    datasets["train"],
+                    train_motion_profile,
+                    seed=seed,
+                    epoch=epoch,
+                )
+                def schedule_filenames(indexes):
+                    return [
+                        (
+                            f"{datasets['train'].traces[window.recording_idx].filename_stem}_"
+                            f"d{window.start}-{window.end}_view{view_idx}"
+                        )
+                        for base_idx in indexes
+                        for window in (datasets["train"].window_indexes[base_idx],)
+                        for view_idx in range(len(datasets["train"].subcarrier_views))
+                    ]
+
+                sampling_epoch_report = {
+                    "epoch": epoch,
+                    "rich_windows": len(motion_schedule.rich_indexes),
+                    "ordinary_windows": len(motion_schedule.ordinary_indexes),
+                    "effective_windows": len(motion_schedule.base_indexes),
+                    "rich_filenames": schedule_filenames(sorted(motion_schedule.rich_indexes)),
+                    "ordinary_filenames": schedule_filenames(motion_schedule.ordinary_indexes),
+                }
+                sampling_path = training_dir / "sampling" / f"epoch_{epoch:04d}.json"
+                save_json(sampling_path, sampling_epoch_report)
+                if wandb_run is not None:
+                    wandb_run.save(
+                        str(sampling_path),
+                        base_path=str(run_dir),
+                        policy="now",
+                    )
+
             train_result = run_distillation_epoch(
                 model,
-                batches_for("train", shuffle=True, batch_seed=seed + epoch),
+                batches_for(
+                    "train",
+                    shuffle=True,
+                    batch_seed=seed + epoch,
+                    base_indexes=(
+                        motion_schedule.base_indexes
+                        if motion_schedule is not None
+                        else None
+                    ),
+                    motion_rich_indexes=(
+                        motion_schedule.rich_indexes
+                        if motion_schedule is not None
+                        else None
+                    ),
+                ),
                 device=device,
                 optimizer=optimizer,
                 scaler=scaler,
                 amp_enabled=amp_enabled,
                 loss_name=config["training"]["loss"],
                 loss_options=loss_options,
+                metric_options=metric_options,
                 global_step=global_step,
                 batch_callback=log_batch if wandb_run is not None else None,
                 batch_callback_every=log_every,
             )
             global_step = train_result.global_step
 
-            train_reference_result = None
-            if train_reference_batch is not None:
-                train_reference_result = run_distillation_epoch(
+            reference_results = {}
+            for split_name, fixed_batches in reference_batches.items():
+                reference_results[split_name] = run_distillation_epoch(
                     model,
-                    iter((train_reference_batch,)),
+                    iter(fixed_batches),
                     device=device,
                     amp_enabled=amp_enabled,
                     loss_name=config["training"]["loss"],
                     loss_options=loss_options,
+                    metric_options=metric_options,
                     global_step=global_step,
                     max_examples=max_examples,
                 )
@@ -691,8 +840,9 @@ def main() -> None:
                     amp_enabled=amp_enabled,
                     loss_name=config["training"]["loss"],
                     loss_options=loss_options,
+                    metric_options=metric_options,
                     global_step=global_step,
-                    max_examples=max_examples,
+                    max_examples=0,
                 )
 
             target_metric = evaluations["target_val"].metrics[early_stopping_metric]
@@ -713,6 +863,12 @@ def main() -> None:
                 "patience_counter": patience_counter,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
+            if sampling_epoch_report is not None:
+                epoch_record["sampling"] = {
+                    key: value
+                    for key, value in sampling_epoch_report.items()
+                    if not key.endswith("_filenames")
+                }
             if device.type == "cuda":
                 epoch_record["gpu_peak_memory_bytes"] = int(torch.cuda.max_memory_allocated(device))
             history.append(epoch_record)
@@ -750,19 +906,26 @@ def main() -> None:
                 **prefix_metrics("source_val", evaluations["source_val"].metrics),
                 **prefix_metrics("target_val", evaluations["target_val"].metrics),
             }
+            if sampling_epoch_report is not None:
+                logged.update(
+                    {
+                        f"sampling/{key}": value
+                        for key, value in sampling_epoch_report.items()
+                        if not key.endswith("_filenames") and key != "epoch"
+                    }
+                )
             if "gpu_peak_memory_bytes" in epoch_record:
                 logged["system/gpu_peak_memory_bytes"] = epoch_record["gpu_peak_memory_bytes"]
             if wandb_run is not None:
                 wandb_run.log(logged)
-                if train_reference_result is not None:
+                for split_name, reference_result in reference_results.items():
+                    log_name = "train_reference" if split_name == "train" else split_name
                     log_examples(
                         wandb_run,
-                        "train_reference",
-                        train_reference_result.examples,
+                        log_name,
+                        reference_result.examples,
                         global_step,
                     )
-                log_examples(wandb_run, "source_val", evaluations["source_val"].examples, global_step)
-                log_examples(wandb_run, "target_val", evaluations["target_val"].examples, global_step)
                 log_model_artifact(
                     wandb_run,
                     latest_path,
@@ -804,6 +967,7 @@ def main() -> None:
             amp_enabled=amp_enabled,
             loss_name=config["training"]["loss"],
             loss_options=loss_options,
+            metric_options=metric_options,
             global_step=global_step,
             max_examples=max_examples,
         )

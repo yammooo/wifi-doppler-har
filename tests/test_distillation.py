@@ -38,6 +38,8 @@ from wifi_doppler.models.csi_to_doppler_shared_antenna import (
 )
 from wifi_doppler.training.distillation import (
     DistillationMetricAccumulator,
+    build_motion_epoch_schedule,
+    build_motion_sampling_profile,
     count_recording_batches,
     distillation_loss,
     distillation_loss_components,
@@ -86,6 +88,46 @@ class FakeDataset:
 
     def __len__(self) -> int:
         return len(self.window_indexes) * len(self.subcarrier_views)
+
+    @staticmethod
+    def raw_bounds_for_doppler_window(start: int, end: int) -> tuple[int, int]:
+        return start, end
+
+
+class MotionRecording:
+    def __init__(self, name: str, offset: float):
+        self.filename_stem = name
+        self.doppler_load_count = 0
+        values = np.arange(4 * 3 * 8, dtype=np.float32).reshape(4, 3, 8) + offset
+        self.raw = values.astype(np.complex64) + 1j * values
+        self.doppler = np.zeros((4, 8, 7), dtype=np.float32)
+        active_antennas = (0, 1, 2, 3, 4, 0, 1, 2)
+        for time_idx, count in enumerate(active_antennas):
+            self.doppler[:count, time_idx, 0] = 1
+
+    def load_raw(self) -> np.ndarray:
+        return self.raw
+
+    def load_doppler(self) -> np.ndarray:
+        self.doppler_load_count += 1
+        return self.doppler
+
+    def clear_cache(self) -> None:
+        pass
+
+
+class MotionDataset:
+    def __init__(self):
+        self.traces = [
+            MotionRecording("motion_a", 0),
+            MotionRecording("motion_b", 100),
+        ]
+        self.subcarrier_views = (np.asarray([0, 1, 2]),)
+        self.window_indexes = [
+            WindowIndex(recording_idx, start, start + 1)
+            for recording_idx in range(2)
+            for start in range(8)
+        ]
 
     @staticmethod
     def raw_bounds_for_doppler_window(start: int, end: int) -> tuple[int, int]:
@@ -211,6 +253,29 @@ class DistillationTests(unittest.TestCase):
         self.assertAlmostEqual(result["negative_fraction"], 1 / 6)
         self.assertAlmostEqual(result["mse_antenna_0"], 5 / 3)
         self.assertAlmostEqual(result["mse_antenna_1"], 4 / 3)
+
+    def test_motion_support_metrics(self) -> None:
+        targets = torch.zeros(1, 1, 3, 7)
+        predictions = torch.zeros_like(targets)
+        targets[0, 0, 0, 0] = 1
+        targets[0, 0, 2, 6] = 1
+        predictions[0, 0, 0, 0] = 0.5
+        predictions[0, 0, 1, 0] = 0.5
+
+        metrics = DistillationMetricAccumulator(
+            num_antennas=1,
+            motion_floor=0,
+            motion_threshold=0.2,
+            center_half_width=1,
+        )
+        metrics.update(predictions, targets)
+        result = metrics.compute()
+
+        self.assertAlmostEqual(result["off_center_mse"], 0.125)
+        self.assertAlmostEqual(result["active_frame_precision"], 0.5)
+        self.assertAlmostEqual(result["active_frame_recall"], 0.5)
+        self.assertAlmostEqual(result["active_frame_f1"], 0.5)
+        self.assertAlmostEqual(result["motion_mass_ratio"], 0.5)
 
     def test_motion_weighted_wasserstein_uses_doppler_bin_distance(self) -> None:
         target = torch.zeros(1, 1, 1, 5)
@@ -463,6 +528,61 @@ class DistillationTests(unittest.TestCase):
         self.assertEqual(order(8), order(8))
         self.assertNotEqual(order(8), order(9))
 
+    def test_motion_stratified_batches_and_epoch_rotation(self) -> None:
+        dataset = MotionDataset()
+        profile = build_motion_sampling_profile(
+            dataset,
+            active_threshold=0.2,
+            center_half_width=1,
+            rich_quantile=0.75,
+        )
+        expected_scores = np.asarray((0, 0.25, 0.5, 0.75, 1, 0, 0.25, 0.5) * 2)
+        np.testing.assert_allclose(profile.scores, expected_scores)
+        self.assertEqual(set(np.flatnonzero(profile.rich_mask)), {3, 4, 11, 12})
+        self.assertEqual(
+            [recording.doppler_load_count for recording in dataset.traces],
+            [1, 1],
+        )
+
+        schedules = [
+            build_motion_epoch_schedule(dataset, profile, seed=7, epoch=epoch)
+            for epoch in (1, 2, 3)
+        ]
+        self.assertEqual(schedules[0], build_motion_epoch_schedule(dataset, profile, seed=7, epoch=1))
+        for schedule in schedules:
+            self.assertEqual(len(schedule.base_indexes), 8)
+            self.assertEqual(len(set(schedule.base_indexes)), 8)
+            self.assertEqual(schedule.rich_indexes, frozenset({3, 4, 11, 12}))
+            self.assertEqual(len(schedule.ordinary_indexes), 4)
+        self.assertEqual(
+            set().union(*(set(schedule.ordinary_indexes) for schedule in schedules)),
+            set(range(16)) - {3, 4, 11, 12},
+        )
+        self.assertNotEqual(
+            schedules[0].ordinary_indexes,
+            build_motion_epoch_schedule(dataset, profile, seed=8, epoch=1).ordinary_indexes,
+        )
+
+        batches = list(
+            iter_recording_batches(
+                dataset,
+                batch_size=4,
+                shuffle=True,
+                seed=8,
+                recordings_per_batch=2,
+                base_indexes=schedules[0].base_indexes,
+                motion_rich_indexes=schedules[0].rich_indexes,
+            )
+        )
+        for batch in batches:
+            rich_count = sum(
+                int(filename.split("_d", 1)[1].split("-", 1)[0])
+                + (8 if filename.startswith("motion_b") else 0)
+                in schedules[0].rich_indexes
+                for filename in batch.filenames
+            )
+            self.assertEqual(rich_count * 2, len(batch.filenames))
+
     def test_recording_iterator_reports_misaligned_recording(self) -> None:
         dataset = FakeDataset()
         dataset.traces[0].raw = dataset.traces[0].raw[..., :2]
@@ -524,6 +644,28 @@ class DistillationTests(unittest.TestCase):
 
         config["training"]["loss_options"]["motion_mse_weight"] = -1
         with self.assertRaisesRegex(ValueError, "non-negative"):
+            validate_config(config)
+
+    def test_ar_motion_balanced_config_validation(self) -> None:
+        config = yaml.safe_load(
+            (
+                PROJECT_ROOT
+                / "configs"
+                / "csi_to_doppler"
+                / "ar_motion_balanced_unet2d_shared_antenna_full_resolution.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        validate_config(config)
+        self.assertEqual(config["data"]["window_stride"], 170)
+        self.assertEqual(config["training"]["sampling"]["mode"], "motion_stratified")
+        self.assertEqual(config["data"]["splits"]["target_test"]["scenarios"], [
+            "AR-1a",
+            "AR-1b",
+            "AR-1c",
+        ])
+
+        config["training"]["batch_size"] = 15
+        with self.assertRaisesRegex(ValueError, "even batch_size"):
             validate_config(config)
 
     def test_one_epoch_cpu_smoke(self) -> None:
@@ -953,6 +1095,12 @@ class PairedDatasetTests(unittest.TestCase):
                     },
                     "batch_size": 2,
                     "recordings_per_batch": 2,
+                    "sampling": {
+                        "mode": "motion_stratified",
+                        "active_threshold": 0.2,
+                        "center_half_width": 5,
+                        "rich_quantile": 0.75,
+                    },
                     "learning_rate": 0.001,
                     "epochs": 1,
                     "amp": False,
@@ -992,6 +1140,8 @@ class PairedDatasetTests(unittest.TestCase):
             self.assertTrue((run_dir / "model.pt").exists())
             self.assertTrue((run_dir / "training" / "latest.pt").exists())
             self.assertTrue((run_dir / "training" / "final_test.json").exists())
+            self.assertTrue((run_dir / "training" / "sampling_profile.json").exists())
+            self.assertTrue((run_dir / "training" / "sampling" / "epoch_0001.json").exists())
             run_record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(run_record["status"], "completed")
             self.assertEqual(
@@ -1025,6 +1175,7 @@ class PairedDatasetTests(unittest.TestCase):
             self.assertEqual(resumed.returncode, 0, msg=resumed.stdout + resumed.stderr)
             latest = torch.load(run_dir / "training" / "latest.pt", weights_only=False)
             self.assertEqual(latest["epoch"], 2)
+            self.assertTrue((run_dir / "training" / "sampling" / "epoch_0002.json").exists())
 
 
 if __name__ == "__main__":

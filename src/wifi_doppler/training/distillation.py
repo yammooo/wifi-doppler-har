@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import math
@@ -30,6 +30,167 @@ class EpochResult:
     num_samples: int
     global_step: int
     examples: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class MotionSamplingProfile:
+    scores: np.ndarray
+    rich_mask: np.ndarray
+    active_threshold: float
+    center_half_width: int
+    rich_quantile: float
+
+
+@dataclass(frozen=True)
+class MotionEpochSchedule:
+    base_indexes: tuple[int, ...]
+    rich_indexes: frozenset[int]
+    ordinary_indexes: tuple[int, ...]
+
+
+def build_motion_sampling_profile(
+    dataset,
+    *,
+    active_threshold: float = 0.2,
+    center_half_width: int = 5,
+    rich_quantile: float = 0.75,
+) -> MotionSamplingProfile:
+    """Score target motion and select each recording's richest windows."""
+    if not 0 <= active_threshold <= 1:
+        raise ValueError("active_threshold must be in [0, 1].")
+    if not 0 < rich_quantile < 1:
+        raise ValueError("rich_quantile must be in (0, 1).")
+
+    by_recording: dict[int, list[int]] = {}
+    for base_idx, window in enumerate(dataset.window_indexes):
+        by_recording.setdefault(window.recording_idx, []).append(base_idx)
+
+    scores = np.zeros(len(dataset.window_indexes), dtype=np.float32)
+    rich_mask = np.zeros(len(dataset.window_indexes), dtype=np.bool_)
+    for recording_idx, base_indexes in by_recording.items():
+        recording = dataset.traces[recording_idx]
+        doppler = recording.load_doppler()
+        num_bins = int(doppler.shape[-1])
+        center = num_bins // 2
+        left_end = center - center_half_width
+        right_start = center + center_half_width + 1
+        if (
+            center_half_width < 0
+            or left_end < 0
+            or right_start > num_bins
+            or (left_end == 0 and right_start == num_bins)
+        ):
+            raise ValueError("center_half_width must leave at least one off-center bin.")
+
+        left_max = (
+            doppler[..., :left_end].max(axis=-1)
+            if left_end
+            else np.full(doppler.shape[:2], -np.inf, dtype=np.float32)
+        )
+        right_max = (
+            doppler[..., right_start:].max(axis=-1)
+            if right_start < num_bins
+            else np.full(doppler.shape[:2], -np.inf, dtype=np.float32)
+        )
+        active_per_time = (
+            np.maximum(left_max, right_max) > active_threshold
+        ).sum(axis=0, dtype=np.int64)
+        prefix = np.concatenate(([0], np.cumsum(active_per_time, dtype=np.int64)))
+
+        for base_idx in base_indexes:
+            window = dataset.window_indexes[base_idx]
+            active_count = int(prefix[window.end] - prefix[window.start])
+            scores[base_idx] = active_count / (
+                doppler.shape[0] * (window.end - window.start)
+            )
+
+        rich_count = min(
+            max(1, math.ceil(len(base_indexes) * (1 - rich_quantile))),
+            len(base_indexes) // 2,
+        )
+        ranked = sorted(base_indexes, key=lambda index: (-float(scores[index]), index))
+        rich_mask[ranked[:rich_count]] = True
+        recording.clear_cache()
+
+    return MotionSamplingProfile(
+        scores=scores,
+        rich_mask=rich_mask,
+        active_threshold=active_threshold,
+        center_half_width=center_half_width,
+        rich_quantile=rich_quantile,
+    )
+
+
+def build_motion_epoch_schedule(
+    dataset,
+    profile: MotionSamplingProfile,
+    *,
+    seed: int,
+    epoch: int,
+) -> MotionEpochSchedule:
+    """Use every rich window and rotate through an equal number of ordinary windows."""
+    if epoch < 1:
+        raise ValueError("epoch must be >= 1.")
+    if len(profile.scores) != len(dataset.window_indexes):
+        raise ValueError("Motion profile does not match the dataset windows.")
+
+    by_recording: dict[int, list[int]] = {}
+    for base_idx, window in enumerate(dataset.window_indexes):
+        by_recording.setdefault(window.recording_idx, []).append(base_idx)
+
+    rich_indexes: list[int] = []
+    ordinary_indexes: list[int] = []
+    for recording_idx, base_indexes in sorted(by_recording.items()):
+        rich = [index for index in base_indexes if profile.rich_mask[index]]
+        ordinary = [index for index in base_indexes if not profile.rich_mask[index]]
+        if not rich or len(ordinary) < len(rich):
+            raise ValueError(
+                f"Recording {dataset.traces[recording_idx].filename_stem} does not "
+                "contain enough windows for balanced motion sampling."
+            )
+
+        rng = np.random.default_rng(np.random.SeedSequence([seed, recording_idx]))
+        ordinary_order = np.asarray(ordinary, dtype=np.int64)
+        rng.shuffle(ordinary_order)
+        start = ((epoch - 1) * len(rich)) % len(ordinary_order)
+        positions = (start + np.arange(len(rich))) % len(ordinary_order)
+
+        rich_indexes.extend(rich)
+        ordinary_indexes.extend(int(ordinary_order[position]) for position in positions)
+
+    return MotionEpochSchedule(
+        base_indexes=tuple(rich_indexes + ordinary_indexes),
+        rich_indexes=frozenset(rich_indexes),
+        ordinary_indexes=tuple(ordinary_indexes),
+    )
+
+
+def motion_sampling_report(dataset, profile: MotionSamplingProfile) -> dict[str, Any]:
+    scores = profile.scores.astype(np.float64, copy=False)
+    quantiles = np.quantile(scores, (0, 0.25, 0.5, 0.75, 1))
+    return {
+        "active_threshold": profile.active_threshold,
+        "center_half_width": profile.center_half_width,
+        "rich_quantile": profile.rich_quantile,
+        "windows": len(scores),
+        "rich_windows": int(profile.rich_mask.sum()),
+        "ordinary_windows": int((~profile.rich_mask).sum()),
+        "score_quantiles": {
+            name: float(value)
+            for name, value in zip(("min", "p25", "p50", "p75", "max"), quantiles)
+        },
+        "window_scores": [
+            {
+                "filename": (
+                    f"{dataset.traces[window.recording_idx].filename_stem}_"
+                    f"d{window.start}-{window.end}"
+                ),
+                "score": float(scores[base_idx]),
+                "rich": bool(profile.rich_mask[base_idx]),
+            }
+            for base_idx, window in enumerate(dataset.window_indexes)
+        ],
+    }
 
 
 def distillation_loss(
@@ -246,12 +407,23 @@ def motion_weighted_wasserstein_loss(
 class DistillationMetricAccumulator:
     """Accumulate regression metrics without retaining full predictions."""
 
-    def __init__(self, num_antennas: int):
+    def __init__(
+        self,
+        num_antennas: int,
+        *,
+        motion_floor: float = 10**-1.2,
+        motion_threshold: float = 0.2,
+        center_half_width: int = 0,
+    ):
         self.num_antennas = num_antennas
+        self.motion_floor = motion_floor
+        self.motion_threshold = motion_threshold
+        self.center_half_width = center_half_width
         self._stats: torch.Tensor | None = None
         self.element_count = 0
         self.per_antenna_count = np.zeros(num_antennas, dtype=np.int64)
         self.peak_count = 0
+        self.off_center_count = 0
 
     def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None:
         if predictions.shape != targets.shape:
@@ -269,6 +441,36 @@ class DistillationMetricAccumulator:
         per_antenna_sse = squared_error.sum(dim=(0, 2, 3))
         predicted_peaks = predictions.detach().argmax(dim=-1)
         target_peaks = targets.detach().argmax(dim=-1)
+        center = predictions.shape[-1] // 2
+        left_end = center - self.center_half_width
+        right_start = center + self.center_half_width + 1
+        if (
+            self.center_half_width < 0
+            or left_end < 0
+            or right_start > predictions.shape[-1]
+            or (left_end == 0 and right_start == predictions.shape[-1])
+        ):
+            raise ValueError("center_half_width must leave at least one off-center bin.")
+        off_center_error = torch.cat(
+            (squared_error[..., :left_end], squared_error[..., right_start:]),
+            dim=-1,
+        )
+        predicted_motion = torch.cat(
+            (
+                predictions.detach()[..., :left_end],
+                predictions.detach()[..., right_start:],
+            ),
+            dim=-1,
+        )
+        target_motion = torch.cat(
+            (
+                targets.detach()[..., :left_end],
+                targets.detach()[..., right_start:],
+            ),
+            dim=-1,
+        )
+        predicted_active = predicted_motion.amax(dim=-1) > self.motion_threshold
+        target_active = target_motion.amax(dim=-1) > self.motion_threshold
         batch_stats = torch.cat(
             (
                 per_antenna_sse.sum().reshape(1),
@@ -276,6 +478,12 @@ class DistillationMetricAccumulator:
                 per_antenna_sse,
                 (predicted_peaks - target_peaks).abs().sum().reshape(1),
                 (predictions.detach() < 0).sum().reshape(1),
+                off_center_error.sum().reshape(1),
+                (predicted_active & target_active).sum().reshape(1),
+                (predicted_active & ~target_active).sum().reshape(1),
+                (~predicted_active & target_active).sum().reshape(1),
+                (predicted_motion - self.motion_floor).clamp_min(0).sum().reshape(1),
+                (target_motion - self.motion_floor).clamp_min(0).sum().reshape(1),
             )
         ).double()
         if self._stats is None:
@@ -286,6 +494,7 @@ class DistillationMetricAccumulator:
         per_antenna_elements = predictions.shape[0] * predictions.shape[2] * predictions.shape[3]
         self.per_antenna_count += per_antenna_elements
         self.peak_count += predicted_peaks.numel()
+        self.off_center_count += off_center_error.numel()
 
     def compute(self) -> dict[str, float]:
         if self.element_count == 0 or self._stats is None:
@@ -294,15 +503,35 @@ class DistillationMetricAccumulator:
         total_sse = float(stats[0])
         total_absolute_error = float(stats[1])
         per_antenna_sse = stats[2 : 2 + self.num_antennas]
-        peak_absolute_error = float(stats[-2])
-        negative_count = float(stats[-1])
+        metric_stats = stats[2 + self.num_antennas :]
+        (
+            peak_absolute_error,
+            negative_count,
+            off_center_sse,
+            true_positive,
+            false_positive,
+            false_negative,
+            predicted_motion_mass,
+            target_motion_mass,
+        ) = (float(value) for value in metric_stats)
         mse = total_sse / self.element_count
+        precision = true_positive / max(true_positive + false_positive, 1)
+        recall = true_positive / max(true_positive + false_negative, 1)
         metrics = {
             "mse": mse,
             "mae": total_absolute_error / self.element_count,
             "rmse": math.sqrt(mse),
             "peak_bin_mae": peak_absolute_error / self.peak_count,
             "negative_fraction": negative_count / self.element_count,
+            "off_center_mse": off_center_sse / self.off_center_count,
+            "active_frame_precision": precision,
+            "active_frame_recall": recall,
+            "active_frame_f1": (
+                2 * precision * recall / (precision + recall)
+                if precision + recall
+                else 0.0
+            ),
+            "motion_mass_ratio": predicted_motion_mass / max(target_motion_mass, 1e-12),
         }
         for antenna in range(self.num_antennas):
             metrics[f"mse_antenna_{antenna}"] = per_antenna_sse[antenna] / self.per_antenna_count[antenna]
@@ -329,6 +558,8 @@ def iter_recording_batches(
     recordings_per_batch: int = 1,
     window_shuffle_chunk_size: int = 1,
     batch_preparation_workers: int = 1,
+    base_indexes: Sequence[int] | None = None,
+    motion_rich_indexes: Collection[int] | None = None,
 ) -> Iterator[DistillationBatch]:
     """Yield all windows from bounded pools of backing recordings."""
     if batch_size < 1:
@@ -339,9 +570,25 @@ def iter_recording_batches(
         raise ValueError("window_shuffle_chunk_size must be >= 1.")
     if batch_preparation_workers < 1:
         raise ValueError("batch_preparation_workers must be >= 1.")
+    selected_indexes = (
+        list(range(len(dataset.window_indexes)))
+        if base_indexes is None
+        else [int(index) for index in base_indexes]
+    )
+    if len(selected_indexes) != len(set(selected_indexes)):
+        raise ValueError("base_indexes must not contain duplicates.")
+    if any(index < 0 or index >= len(dataset.window_indexes) for index in selected_indexes):
+        raise IndexError("base_indexes contains an out-of-range window index.")
+    stratified = motion_rich_indexes is not None
+    rich_indexes = set(motion_rich_indexes or ())
+    if not rich_indexes.issubset(selected_indexes):
+        raise ValueError("motion_rich_indexes must be a subset of base_indexes.")
+    if stratified and batch_size % 2:
+        raise ValueError("Motion-stratified batching requires an even batch_size.")
 
     by_recording: dict[int, list[tuple[int, int]]] = {}
-    for base_idx, window in enumerate(dataset.window_indexes):
+    for base_idx in selected_indexes:
+        window = dataset.window_indexes[base_idx]
         items = by_recording.setdefault(window.recording_idx, [])
         items.extend((base_idx, view_idx) for view_idx in range(len(dataset.subcarrier_views)))
     subcarrier_selectors: list[slice | np.ndarray] = []
@@ -357,36 +604,73 @@ def iter_recording_batches(
     if shuffle:
         rng.shuffle(recording_order)
 
-    for pool_offset in range(0, len(recording_order), recordings_per_batch):
-        pool = [int(value) for value in recording_order[pool_offset : pool_offset + recordings_per_batch]]
-        pool_items: dict[int, list[tuple[int, int]]] = {}
-        for recording_idx in pool:
-            items = list(by_recording[recording_idx])
-            if shuffle:
-                chunks = [
-                    items[offset : offset + window_shuffle_chunk_size]
-                    for offset in range(0, len(items), window_shuffle_chunk_size)
-                ]
-                rng.shuffle(chunks)
-                items = [item for chunk in chunks for item in chunk]
-            pool_items[recording_idx] = items
+    def shuffle_items(items: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        if not shuffle:
+            return items
+        chunks = [
+            items[offset : offset + window_shuffle_chunk_size]
+            for offset in range(0, len(items), window_shuffle_chunk_size)
+        ]
+        rng.shuffle(chunks)
+        return [item for chunk in chunks for item in chunk]
 
+    def interleave_recordings(
+        items_by_recording: dict[int, list[tuple[int, int]]],
+    ) -> list[tuple[int, int, int]]:
         interleaved: list[tuple[int, int, int]] = []
-        positions = {recording_idx: 0 for recording_idx in pool}
-        active = list(pool)
+        positions = {recording_idx: 0 for recording_idx in items_by_recording}
+        active = [
+            recording_idx
+            for recording_idx, items in items_by_recording.items()
+            if items
+        ]
         while active:
             if shuffle:
                 rng.shuffle(active)
             remaining = []
             for recording_idx in active:
                 position = positions[recording_idx]
-                items = pool_items[recording_idx]
+                items = items_by_recording[recording_idx]
                 base_idx, view_idx = items[position]
                 interleaved.append((recording_idx, base_idx, view_idx))
                 positions[recording_idx] = position + 1
                 if position + 1 < len(items):
                     remaining.append(recording_idx)
             active = remaining
+        return interleaved
+
+    for pool_offset in range(0, len(recording_order), recordings_per_batch):
+        pool = [int(value) for value in recording_order[pool_offset : pool_offset + recordings_per_batch]]
+        pool_items: dict[int, list[tuple[int, int]]] = {}
+        for recording_idx in pool:
+            pool_items[recording_idx] = shuffle_items(list(by_recording[recording_idx]))
+
+        if stratified:
+            rich_by_recording = {
+                recording_idx: [
+                    item for item in items if item[0] in rich_indexes
+                ]
+                for recording_idx, items in pool_items.items()
+            }
+            ordinary_by_recording = {
+                recording_idx: [
+                    item for item in items if item[0] not in rich_indexes
+                ]
+                for recording_idx, items in pool_items.items()
+            }
+            rich_items = interleave_recordings(rich_by_recording)
+            ordinary_items = interleave_recordings(ordinary_by_recording)
+            if len(rich_items) != len(ordinary_items):
+                raise ValueError(
+                    "Motion-stratified pools must contain equal rich and ordinary windows."
+                )
+            half_batch = batch_size // 2
+            interleaved = []
+            for offset in range(0, len(rich_items), half_batch):
+                interleaved.extend(rich_items[offset : offset + half_batch])
+                interleaved.extend(ordinary_items[offset : offset + half_batch])
+        else:
+            interleaved = interleave_recordings(pool_items)
 
         loaded: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         try:
@@ -670,6 +954,7 @@ def run_distillation_epoch(
     amp_enabled: bool = False,
     loss_name: str = "mse",
     loss_options: dict[str, Any] | None = None,
+    metric_options: dict[str, Any] | None = None,
     global_step: int = 0,
     max_examples: int = 0,
     batch_callback: Callable[[int, dict[str, float]], None] | None = None,
@@ -680,7 +965,10 @@ def run_distillation_epoch(
         raise ValueError("batch_callback_every must be >= 1")
     training = optimizer is not None
     model.train(training)
-    accumulator = DistillationMetricAccumulator(num_antennas=int(model.num_antennas))
+    accumulator = DistillationMetricAccumulator(
+        num_antennas=int(model.num_antennas),
+        **(metric_options or {}),
+    )
     examples: list[dict[str, Any]] = []
     num_batches = 0
     num_samples = 0
