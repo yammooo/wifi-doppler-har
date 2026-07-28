@@ -2069,12 +2069,16 @@ Run the config unchanged, attach the W&B run ID here, and evaluate the support
 metrics and fixed heatmaps before interpreting global MSE.
 
 **2026-07-28 pre-run correction:** The final config expands training to
-0-80% of every AR recording and uses batch 64. Source validation is all AR at
+0-80% of every AR recording. Source validation is all AR at
 80-90%; target validation is `AR-1a/1b/1c` at 80-90%; final test is the same
 three scenarios at 90-100%. This produces 14,342 train, 1,538 source
 validation, and approximately 217 target validation/test windows. The earlier
 10,684-window and 51.4%-per-epoch measurements describe the superseded
 0-60% training split; the sampler behavior is otherwise unchanged.
+
+**Measurement:** Batch 64 caused CUDA OOM on the RTX 4090. The reproducible
+config therefore uses batch 32, corresponding to 16 rich and 16 ordinary
+windows and an effective shared-antenna network batch of 128.
 
 ## Open Paper-Level Questions
 

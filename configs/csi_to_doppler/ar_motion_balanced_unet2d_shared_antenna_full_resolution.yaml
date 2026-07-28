@@ -61,7 +61,7 @@ training:
     active_threshold: 0.2
     center_half_width: 5
     rich_quantile: 0.75
-  batch_size: 64
+  batch_size: 32
   recordings_per_batch: 8
   window_shuffle_chunk_size: 8
   batch_preparation_workers: 4
