@@ -55,7 +55,13 @@ def resolve_scenarios(doppler_root: Path, selectors: list[str]) -> list[str]:
         if selector.lower() == "all":
             matches = available
         elif selector.upper() in {"AR", "PC", "PI"}:
-            matches = [name for name in available if name.startswith(f"{selector.upper()}-")]
+            family = selector.upper()
+            matches = [
+                name
+                for name in available
+                if name.startswith(f"{family}-")
+                or (family == "AR" and name.startswith("S") and name[1:2].isdigit())
+            ]
         else:
             matches = [selector]
         for scenario in matches:

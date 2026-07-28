@@ -134,6 +134,11 @@ class GenericSharpPreprocessingTests(unittest.TestCase):
                 ["PI1a_p03"],
             )
             self.assertEqual(resolve_scenarios(root, ["AR", "PC"]), ["AR-1a", "PC-1a"])
+            (root / "S1b").mkdir()
+            self.assertEqual(
+                resolve_scenarios(root, ["AR", "PC"]),
+                ["AR-1a", "S1b", "PC-1a"],
+            )
 
     def test_compute_doppler_preserves_canonical_subset_and_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -254,9 +254,16 @@ class CsiToSharpDopplerDataset(WindowedTraceDataset):
     def _collect_raw_paths(self) -> dict[tuple[str, str, str], Path]:
         paths: dict[tuple[str, str, str], Path] = {}
         for scenario in self.scenarios:
-            raw_dir = self.raw_root / raw_scenario_dir(scenario)
-            if not raw_dir.is_dir():
-                raise FileNotFoundError(f"Missing raw CSI scenario directory: {raw_dir}")
+            candidates = [self.raw_root / scenario]
+            canonical = self.raw_root / raw_scenario_dir(scenario)
+            if canonical not in candidates:
+                candidates.append(canonical)
+            raw_dir = next((path for path in candidates if path.is_dir()), None)
+            if raw_dir is None:
+                expected = ", ".join(str(path) for path in candidates)
+                raise FileNotFoundError(
+                    f"Missing raw CSI scenario directory; expected one of: {expected}"
+                )
 
             for entry in os.scandir(raw_dir):
                 if not entry.is_file() or not entry.name.endswith(".mat"):
@@ -341,12 +348,15 @@ def raw_scenario_dir(doppler_scenario: str) -> str:
 
 def raw_file_key(doppler_scenario: str, raw_stem: str) -> tuple[str, str, str] | None:
     if doppler_scenario.startswith("S"):
-        prefix = f"AR{doppler_scenario[1:]}_"
-        if not raw_stem.startswith(prefix):
+        prefixes = (f"{doppler_scenario}_", f"AR{doppler_scenario[1:]}_")
+        prefix = next((value for value in prefixes if raw_stem.startswith(value)), None)
+        if prefix is None:
             return None
         token = raw_stem[len(prefix) :]
+        if not token:
+            return None
         label = token[:1]
-        repetition = token[1:]
+        repetition = token[1:].lstrip("_")
         return doppler_scenario, label, repetition
 
     prefix = doppler_scenario.replace("-", "")

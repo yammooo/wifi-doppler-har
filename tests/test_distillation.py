@@ -992,6 +992,16 @@ class PairedDatasetTests(unittest.TestCase):
                 with (ar_doppler_dir / f"S1a_W_stream_{antenna}.txt").open("wb") as stream:
                     pickle.dump(target, stream)
 
+            legacy_raw_dir = root / "raw" / "S1b"
+            legacy_doppler_dir = root / "doppler_ar" / "S1b"
+            legacy_raw_dir.mkdir()
+            legacy_doppler_dir.mkdir()
+            sio.savemat(legacy_raw_dir / "S1b_W.mat", {"csi_buff": ar_csi})
+            for antenna in range(4):
+                target = np.full((40, 100), 0.5 + 0.1 * antenna, dtype=np.float32)
+                with (legacy_doppler_dir / f"S1b_W_stream_{antenna}.txt").open("wb") as stream:
+                    pickle.dump(target, stream)
+
             prepared_root = root / "prepared"
             converted = subprocess.run(
                 [
@@ -1030,6 +1040,7 @@ class PairedDatasetTests(unittest.TestCase):
                     str(prepared_root),
                     "--scenarios",
                     "S1a",
+                    "S1b",
                     "--append",
                 ],
                 cwd=PROJECT_ROOT,
@@ -1041,7 +1052,7 @@ class PairedDatasetTests(unittest.TestCase):
             manifest = json.loads((prepared_root / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 {item["scenario"] for item in manifest["recordings"]},
-                {"PI-1a", "S1a"},
+                {"PI-1a", "S1a", "S1b"},
             )
             self.assertEqual(len(manifest["sources"]), 2)
 
