@@ -252,6 +252,8 @@ class DistillationMetricAccumulator:
         self.element_count = 0
         self.per_antenna_count = np.zeros(num_antennas, dtype=np.int64)
         self.peak_count = 0
+        self.fidelity_matches = 0
+        self.fidelity_samples = 0
 
     def update(self, predictions: torch.Tensor, targets: torch.Tensor) -> None:
         if predictions.shape != targets.shape:
@@ -306,7 +308,16 @@ class DistillationMetricAccumulator:
         }
         for antenna in range(self.num_antennas):
             metrics[f"mse_antenna_{antenna}"] = per_antenna_sse[antenna] / self.per_antenna_count[antenna]
+        for antenna in range(self.num_antennas):
+            metrics[f"mse_antenna_{antenna}"] = per_antenna_sse[antenna] / self.per_antenna_count[antenna]
+        # --- NUOVA METRICA ---
+        if self.fidelity_samples > 0:
+            metrics["classifier_fidelity"] = self.fidelity_matches / self.fidelity_samples
         return metrics
+    
+    def update_fidelity(self, matches: int, num_samples: int) -> None:
+        self.fidelity_matches += matches
+        self.fidelity_samples += num_samples
 
 
 def count_recording_batches(dataset, batch_size: int) -> int:
@@ -674,6 +685,7 @@ def run_distillation_epoch(
     max_examples: int = 0,
     batch_callback: Callable[[int, dict[str, float]], None] | None = None,
     batch_callback_every: int = 1,
+    classifier_judge: torch.nn.Module | None = None,
 ) -> EpochResult:
     """Run one training or evaluation epoch over pre-batched recordings."""
     if batch_callback_every < 1:
@@ -732,6 +744,23 @@ def run_distillation_epoch(
                 global_step += 1
 
             accumulator.update(predictions, targets)
+            # --- NUOVA LOGICA: TEACHER AS A JUDGE ---
+            if classifier_judge is not None:
+                # Disabilitiamo temporaneamente AMP se necessario, ma i tensori 
+                # sono già coerenti con il device.
+                with torch.inference_mode():
+                    # MultiAntennaClassifier di sharp.py si aspetta [B, A, T, D]
+                    logits_true = classifier_judge(targets)
+                    logits_pred = classifier_judge(predictions)
+                    
+                    # Estraiamo le classi (argmax)
+                    preds_true = logits_true.argmax(dim=-1)
+                    preds_pred = logits_pred.argmax(dim=-1)
+                    
+                    # Contiamo quanti elementi combaciano nel batch
+                    matches = (preds_true == preds_pred).sum().item()
+                    accumulator.update_fidelity(matches, targets.shape[0])
+            # ----------------------------------------
             if batch_callback is not None and global_step % batch_callback_every == 0:
                 if not torch.isfinite(loss).item():
                     raise FloatingPointError(
@@ -895,3 +924,8 @@ def _atomic_torch_save(value: dict[str, Any], path: str | Path) -> Path:
     torch.save(value, temporary)
     temporary.replace(target)
     return target
+
+
+def update_fidelity(self, matches: int, num_samples: int) -> None:
+        self.fidelity_matches += matches
+        self.fidelity_samples += num_samples

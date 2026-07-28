@@ -546,6 +546,7 @@ class DistillationTests(unittest.TestCase):
             max_examples=2,
             batch_callback=lambda step, metrics: callback_steps.append((step, metrics)),
             batch_callback_every=2,
+            
         )
         self.assertEqual(result.num_samples, len(dataset))
         self.assertEqual(result.global_step, 2)

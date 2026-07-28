@@ -645,6 +645,32 @@ def main() -> None:
         finally:
             reference_batches.close()
 
+    # --- INIZIALIZZAZIONE CLASSIFICATORE GIUDICE ---
+    classifier_judge = None
+    classifier_ckpt_path = config["training"].get("classifier_checkpoint")
+    
+    if classifier_ckpt_path is not None:
+        classifier_ckpt = Path(classifier_ckpt_path).resolve()
+        if classifier_ckpt.exists():
+            print(f"Caricamento del classificatore SHARP da: {classifier_ckpt}")
+            
+            # --- IMPORT SPOSTATO QUI SOTTO ---
+            from wifi_doppler.models.sharp import SingleAntennaModel, MultiAntennaClassifier
+            
+            single_ant_model = SingleAntennaModel()
+            classifier_judge = MultiAntennaClassifier(single_ant_model, fusion="sum")
+            
+            # Carica i pesi
+            ckpt_data = torch.load(classifier_ckpt, map_location=device, weights_only=False)
+            classifier_judge.load_state_dict(ckpt_data.get("model_state_dict", ckpt_data))
+            
+            classifier_judge = classifier_judge.to(device)
+            classifier_judge.eval()
+            classifier_judge.requires_grad_(False)
+        else:
+            print("ATTENZIONE: Checkpoint del classificatore non trovato. Procedo senza 'fidelity'.")
+    # -----------------------------------------------
+
     try:
         for epoch in range(start_epoch, int(config["training"]["epochs"]) + 1):
             if device.type == "cuda":
@@ -666,6 +692,7 @@ def main() -> None:
                 global_step=global_step,
                 batch_callback=log_batch if wandb_run is not None else None,
                 batch_callback_every=log_every,
+                classifier_judge=classifier_judge,
             )
             global_step = train_result.global_step
 
@@ -680,6 +707,7 @@ def main() -> None:
                     loss_options=loss_options,
                     global_step=global_step,
                     max_examples=max_examples,
+                    classifier_judge=classifier_judge,
                 )
 
             evaluations = {}
@@ -693,8 +721,9 @@ def main() -> None:
                     loss_options=loss_options,
                     global_step=global_step,
                     max_examples=max_examples,
+                    classifier_judge=classifier_judge, # <-- AGGIUNTA
                 )
-
+            
             target_metric = evaluations["target_val"].metrics[early_stopping_metric]
             improved = target_metric < best_metric - min_delta
             if improved:
@@ -806,6 +835,7 @@ def main() -> None:
             loss_options=loss_options,
             global_step=global_step,
             max_examples=max_examples,
+            classifier_judge=classifier_judge,
         )
         final_results = {
             "best_epoch": int(best_checkpoint["epoch"]),

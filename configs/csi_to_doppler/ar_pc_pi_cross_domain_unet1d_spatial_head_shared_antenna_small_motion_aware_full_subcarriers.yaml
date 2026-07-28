@@ -73,6 +73,7 @@ training:
   cuda_prefetch: true
   cudnn_benchmark: true
   allow_tf32: true
+  classifier_checkpoint: "E:/Repos/wifi-doppler-har/experiments/runs/sharp_baseline/checkpoint_sharp.pt"
 
 wandb:
   mode: online
