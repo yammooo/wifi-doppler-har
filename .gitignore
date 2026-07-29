@@ -21,6 +21,27 @@ ENV/
 # Jupyter
 .ipynb_checkpoints/
 
+# LaTeX report build artifacts
+/docs/project_report/build/
+/docs/project_report/**/*.aux
+/docs/project_report/**/*.bbl
+/docs/project_report/**/*.bcf
+/docs/project_report/**/*.blg
+/docs/project_report/**/*.fdb_latexmk
+/docs/project_report/**/*.fls
+/docs/project_report/**/*.log
+/docs/project_report/**/*.lof
+/docs/project_report/**/*.lot
+/docs/project_report/**/*.nav
+/docs/project_report/**/*.out
+/docs/project_report/**/*.run.xml
+/docs/project_report/**/*.snm
+/docs/project_report/**/*.synctex.gz
+/docs/project_report/**/*.toc
+/docs/project_report/**/*.vrb
+/docs/project_report/**/*.xdv
+/docs/project_report/template.pdf
+
 # Local data and generated artifacts
 pdfs/
 /data/
@@ -38,6 +59,7 @@ checkpoints/
 *.pth
 *.ckpt
 *.sif
+*.pdf
 
 # Large raw/scientific data
 *.mat
