@@ -461,14 +461,14 @@ class DistillationMetricAccumulator:
                 predictions.detach()[..., right_start:],
             ),
             dim=-1,
-        )
+        ).float()
         target_motion = torch.cat(
             (
                 targets.detach()[..., :left_end],
                 targets.detach()[..., right_start:],
             ),
             dim=-1,
-        )
+        ).float()
         predicted_active = predicted_motion.amax(dim=-1) > self.motion_threshold
         target_active = target_motion.amax(dim=-1) > self.motion_threshold
         batch_stats = torch.cat(

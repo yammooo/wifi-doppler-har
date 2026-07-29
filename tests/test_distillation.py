@@ -277,6 +277,16 @@ class DistillationTests(unittest.TestCase):
         self.assertAlmostEqual(result["active_frame_f1"], 0.5)
         self.assertAlmostEqual(result["motion_mass_ratio"], 0.5)
 
+        large_predictions = torch.ones(1, 1, 1000, 100, dtype=torch.float16)
+        large_targets = torch.ones(1, 1, 1000, 100)
+        metrics = DistillationMetricAccumulator(
+            num_antennas=1,
+            motion_floor=0,
+            center_half_width=5,
+        )
+        metrics.update(large_predictions, large_targets)
+        self.assertTrue(math.isfinite(metrics.compute()["motion_mass_ratio"]))
+
     def test_motion_weighted_wasserstein_uses_doppler_bin_distance(self) -> None:
         target = torch.zeros(1, 1, 1, 5)
         prediction = torch.zeros_like(target)

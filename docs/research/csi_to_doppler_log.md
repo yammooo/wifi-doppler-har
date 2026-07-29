@@ -1,6 +1,6 @@
 # CSI-to-Doppler Research Log
 
-Last updated: 2026-07-28 (Europe/Rome)
+Last updated: 2026-07-29 (Europe/Rome)
 
 This is the append-only research record for learning the mapping from raw CSI
 to SHARP Doppler maps. Its purpose is to preserve the evidence, reasoning, and
@@ -2096,6 +2096,59 @@ runtime 400-631 seconds, versus 23.9% during the first 400 seconds. The initial
 chart was dominated by motion-profile construction, cold filesystem pages,
 and the first pass through the memmaps. Eight preparation workers remain a
 reasonable next-run setting, but are not a reason to restart this run.
+
+## 2026-07-29
+
+### Full-resolution AR result: center-ridge shortcut remains
+
+**Run/config/code**
+
+- W&B:
+  [`xhg1tsta`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/xhg1tsta)
+- Config:
+  [`ar_motion_balanced_unet2d_shared_antenna_full_resolution.yaml`](../../configs/csi_to_doppler/ar_motion_balanced_unet2d_shared_antenna_full_resolution.yaml)
+
+**Measurements and observations**
+
+- **Measurement:** Early stopping finished at epoch 25 and restored epoch 17,
+  the minimum target-validation loss (`0.020927`).
+- **Measurement:** From epoch 1 to 25, train loss fell `0.04991 -> 0.03028`,
+  source-validation loss `0.03816 -> 0.02957`, and target-validation loss
+  `0.02412 -> 0.02140`. Train and validation did not diverge.
+- **Measurement:** At epoch 25, train/source/target active-frame F1 was
+  `0.493/0.606/0.329`. The loss-selected epoch 17 had target F1 `0.219`.
+- **Measurement:** Restored-best target-test loss was `0.01983`, but
+  active-frame precision/recall/F1 was `0.119/0.996/0.212` and off-center
+  motion-mass ratio `3.89`. The model labels almost every frame active and
+  produces far too much off-center mass.
+- **Observation:** Fixed rich training, source-validation, target-validation,
+  and final-test heatmaps all retain a dominant center ridge. Large,
+  time-varying off-center target structures are replaced by a smooth halo.
+  This failure is present on training references, not only held-out data.
+- **Observation:** Global and off-center MSE improve because a smooth
+  conditional mean reduces average pixel error. Peak-bin MAE is nearly
+  constant because the central ridge remains the maximum; neither establishes
+  reconstruction of motion peaks.
+- **Observation:** `motion_mass_ratio` overflowed to infinity on large AMP
+  batches because FP16 predictions were reduced before conversion to FP32.
+  This affected logging only, not loss or gradients. Metric reductions now
+  cast prediction and target motion maps to FP32.
+
+**Interpretation and confidence**
+
+This is not classic overfitting: training and validation losses improve
+together and the model still fails on fixed training examples. It is
+underfitting in the functional sense, specifically convergence to a
+center-spectrum conditional-mean shortcut. Confidence is high because the
+support metrics and all fixed heatmaps agree.
+
+**Decision**
+
+Run the planned frozen SHARP-classifier test for downstream evidence, but do
+not enlarge this direct-map CNN or retune its pixel-loss weights. The audit's
+termination gate is met. The next modeling direction should explicitly correct
+phase or predict sanitized complex CSI before applying the known
+differentiable Doppler transform.
 
 ## Open Paper-Level Questions
 
