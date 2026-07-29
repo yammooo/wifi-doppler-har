@@ -38,7 +38,7 @@ def download_doppler_zip(
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    gdown.download(id=drive_file_id, output=str(output_path), quiet=False, fuzzy=True)
+    gdown.download(id=drive_file_id, output=str(output_path), quiet=False)
 
     if not output_path.is_file():
         raise FileNotFoundError(f"Download did not create expected file: {output_path}")
