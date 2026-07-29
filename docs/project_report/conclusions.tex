@@ -1,22 +1,17 @@
-% !TEX root = template.tex
+\section{Conclusion}
+\label{sec:conclusion}
 
-\section{Concluding Remarks}
-\label{sec:conclusions}
-
-\red{This section should take max half a column, I personally find it difficult to come up with really useful observations, I mean ones that bring a new contribution with respect to what you have already expounded in the ``Results'' section..}\\
-
-In many papers, here you find a summary of what done. It is basically an abstract where instead of using the present tense you use the past participle, as you refer to something that you have already developed in the previous sections. While I did it myself in the past, I now find it rather useless.\\ 
-
-\rev{\textbf{What I would like to see here is:} 
-\begin{enumerate}
-\item a very short summary of what done, 
-\item some (possibly) intelligent observations on the relevance and {\it applicability} of your algorithms / findings, 
-\item what is still missing, and can be added in the future to extend your work.\\
-\end{enumerate}
-The idea is that this section should be {\it useful} and not just a repetition of the abstract (just \mbox{re-phrased} and written using a different tense...).}\\
-
-\red{\textbf{Moreover:} being a project report, I would also like to see a specific paragraph stating 
-\begin{enumerate}
-\item[4)] what you have learned, and 
-\item[5)] any difficulties you may have encountered.
-\end{enumerate}}
+This study tested whether a convolutional student could replace SHARP
+preprocessing by mapping raw CSI windows directly to Doppler maps. The students
+could memorize small sets, but even the corrected shared-antenna,
+frequency-aware 2-D model converged to a center-ridge shortcut and reached only
+\(40.89\%\) frozen-classifier accuracy. In contrast, explicit affine phase
+correction followed by the fixed Doppler transform matched legacy SHARP at
+\(91.52\%\). The main lesson is that phase invariance matters more here than
+decoder capacity or stronger pixel losses, and that MSE is not a reliable proxy
+for HAR utility. A key difficulty was target provenance: recomputed SHARP maps
+themselves were poorly matched to the legacy classifier. Future work should
+align teacher and classifier data, then learn from sanitized CSI or unroll the
+sparse phase-correction stage. The affine method is immediately applicable as a
+strong, explicit baseline, but equivalent end-to-end runtime remains to be
+measured.

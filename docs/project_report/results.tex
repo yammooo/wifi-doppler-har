@@ -1,12 +1,154 @@
-% !TEX root = template.tex
-
-\section{Results}
+\section{Experimental Evaluation and Discussion}
 \label{sec:results}
 
-In this section, you should provide the numerical results. You are free to decide the structure of this section. As a general ``rule of thumb'', use plots to describe your results, showing, e.g., precision, recall and \mbox{F-measure} as a function of the system (learning) parameters. You can also show the precision matrix. 
+\subsection{Protocol and Metrics}
 
-Present the material in a progressive and logical manner, starting with simple things and adding details and explaining more complex findings as you go. Also, do not try to explain/show multiple concepts within the same sentence. Try to \textbf{address one concept at a time}, explain it properly, and only then move on to the next one.
+The frozen classifier is the reproduced SHARP network trained on legacy
+S1a/S1b/S1c maps from the \(0\)--\(60\%\) recording interval and selected on
+\(60\)--\(80\%\). No classifier weights are updated in this study. Final
+evaluation uses AR-1a/1b/1c windows from \(90\)--\(100\%\), with labels mapped
+to the same five activities and a stride of 30. Each generator receives
+identical raw windows, and the recording-mean centering expected by the
+classifier is estimated independently for each representation. This
+normalization is label-free and shared by all methods.
 
-The best results are obtained by generating the graphs using a vector type file, commonly, either \texttt{encapsulated postscript (eps)} or \texttt{pdf} formats. To plot your figures, use the Latex \texttt{\textbackslash includegraphics} command. Lately, I tend to use pdf more.
+We report full-map MSE and off-center MSE against recomputed targets. To measure
+motion support, a frame is active when its maximum outside bins 45--55 exceeds
+0.2. Precision, recall, and F1 compare predicted and target active frames. The
+motion-mass ratio is total predicted divided by target off-center excess power;
+one is ideal, values above one indicate leakage, and values below one indicate
+suppression. Classifier accuracy is the primary task metric.
 
-If your model has hyper-parameters, show selected results for several values of these. Usually, tables are a good approach to concisely visualize the performance as hyper-parameters change. It is also good to show the results for different flavors of the learning architecture, i.e., how architectural choices affect the overall performance. An example is the use of CNN only or CNN with adversarial training, or using residual layers for CNNs, dropout for better generalization or autoencoder models. So you may obtain different models that solve the same problem, e.g., CNN, CNN+residual layers, etc.
+\subsection{RQ1: Can the Student Learn the Mapping?}
+
+\textbf{Memorization sanity check.}
+Before interpreting full-data failure, two students were optimized repeatedly
+on the same 16 motion-rich PI windows. With 30 subcarriers, run
+\texttt{cwj0myug} reached \(3.881\times10^{-5}\) MSE; with all 242,
+\texttt{tm8nyt19} reached \(4.194\times10^{-5}\). Both reproduced the selected
+peaks visually. Thus, the implementation is differentiable, the optimizer can
+reach a precise solution, and the models have enough capacity to memorize the
+local transform. This test does not demonstrate invariance or generalization.
+
+\textbf{Full-data behavior.}
+In the final AR run, training loss decreased from 0.0499 to 0.0303, while
+all-AR validation decreased from 0.0382 to 0.0296. AR-1a/1b/1c validation was
+noisy (0.0209--0.0398) but did not develop a growing train--validation gap; the
+best value, 0.02093, occurred at epoch 17. \figref{fig:diagnostics} contrasts
+this behavior with the tiny-set test. Because the sampled training distribution
+is intentionally motion-balanced while validation is natural, absolute train
+and validation losses are not directly comparable. Nevertheless, their joint
+plateau and the persistent visual error indicate \emph{functional
+underfitting}: aggregate loss improves without learning when and where sparse
+motion occurs.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{diagnostics.pdf}
+    \caption{Optimization diagnostics. (a) Both 30- and 242-subcarrier models
+    memorize 16 fixed windows. (b) On full AR data, train and validation losses
+    plateau together; the dashed line marks the restored epoch-17 checkpoint.
+    Curves are exported from W\&B runs \texttt{cwj0myug},
+    \texttt{tm8nyt19}, and \texttt{xhg1tsta}.}
+    \label{fig:diagnostics}
+\end{figure*}
+
+The fixed held-out example in \figref{fig:qualitative} shows the same failure.
+The student reproduces the dominant zero-Doppler ridge and roughly localizes
+some event times, but spreads energy into a broad halo and misses the target's
+thin off-center peaks. This is no longer the original independent-output-channel
+artifact: it persists after antenna sharing, full frequency processing, direct
+100-bin prediction, and exact temporal alignment.
+
+\subsection{RQ2: Do Reconstruction Metrics Predict HAR Utility?}
+
+\tabref{tab:main-results} compares six representations. Legacy SHARP provides
+the classifier reference at \(91.36\%\). A raw 31-packet Hann/STFT transform
+fails at \(21.70\%\) and produces \(68.08\times\) the target motion mass,
+confirming that a fixed spectrum alone does not remove nuisance phase. The final
+full-resolution student improves accuracy to \(40.89\%\), but remains far from
+a usable replacement.
+
+\begin{table*}[t]
+\centering
+\caption{Held-out AR-1a/1b/1c comparison. Map metrics use recomputed SHARP as
+the target; classifier accuracy uses the frozen legacy SHARP classifier. Values
+for the recomputed reference are tautological in map space.}
+\label{tab:main-results}
+\footnotesize
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{@{}lrrrrl@{}}
+\hline
+Representation & Classifier accuracy (\%) & Off-center MSE & Active F1 &
+Motion-mass ratio & Role \\
+\hline
+Legacy SHARP & 91.36 & -- & -- & -- & classifier reference \\
+Recomputed SHARP & 36.86 & 0 & 1.000 & 1.00 & regression target \\
+Raw fixed STFT & 21.70 & 0.129644 & 0.246 & 68.08 & signal baseline \\
+Affine correction + fixed STFT & \textbf{91.52} & 0.001408 & \textbf{0.589} & 2.01 & phase-aware baseline \\
+Full-resolution student (\texttt{xhg1tsta}) & \textbf{40.89} & 0.001944 & 0.246 & 3.24 & best neural accuracy \\
+Small spatial-head student (\texttt{3wrefrft}) & 23.64 & \textbf{0.000971} & 0.242 & \textbf{0.49} & best neural MSE \\
+\hline
+\end{tabular}
+\end{table*}
+
+The metric ordering is inconsistent with task utility. The smaller student has
+the lowest off-center MSE, \(9.71\times10^{-4}\), but only \(23.64\%\)
+accuracy. It suppresses motion: recall is \(17.16\%\) and its mass ratio is
+0.49. The final student takes the opposite shortcut: recall is \(99.78\%\), but
+precision is \(14.06\%\) and motion mass is \(3.24\times\) the target. Its F1 is
+therefore almost identical to the smaller model despite much greater recall.
+Low pixel error is dominated by the large stationary background and cannot
+distinguish these functionally different failures.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{qualitative.pdf}
+    \caption{Held-out AR-1a\_C window 16920--17260, with identical color limits.
+    Two motion-rich antennas are shown. The neural student produces a smooth
+    center ridge and broad halo; affine-STFT does not exactly reproduce the
+    recomputed target, but restores temporally localized off-center motion that
+    remains useful to the classifier.}
+    \label{fig:qualitative}
+\end{figure*}
+
+\subsection{RQ3: What Does Explicit Phase Correction Reveal?}
+
+The affine baseline unwraps each antenna's subcarrier phase, fits the
+packet-wise phase difference from the first packet as
+\(\alpha_t s+\beta_t\) by least squares, subtracts it, and then applies the
+same fixed Hann/STFT tail as the raw baseline. It is not proposed as a novel
+algorithm. Yet it reaches \(91.52\%\) classifier accuracy and \(58.93\%\)
+active-frame F1. Its 95\% Wilson interval, \(89.25\)--\(93.34\%\), overlaps the
+legacy SHARP interval, \(89.08\)--\(93.21\%\); the result is a match, not a
+statistically supported improvement.
+
+This comparison changes the diagnosis. The desired task representation can be
+recovered from these windows by a simple explicit nuisance model, so the
+failure is not evidence that raw CSI contains insufficient motion information.
+Instead, direct regression asks a finite convolutional model to infer
+packet-dependent phase invariance, spectral estimation, and the teacher's
+postprocessing simultaneously from an imbalanced pixel objective. The
+architectural corrections remove clear implementation flaws, but they do not
+encode that invariance. Increasing decoder capacity or motion-loss weights is
+therefore unlikely to address the main bottleneck.
+
+\subsection{Limitations and Answer to the RQ}
+
+The strongest limitation is target provenance. Recomputed SHARP maps obtain
+only \(36.86\%\) accuracy under the legacy classifier even though they are the
+student's exact supervision. This means frozen-classifier accuracy measures
+compatibility with the legacy representation as well as motion quality.
+Conversely, reconstruction metrics are valid only relative to the recomputed
+teacher. The two axes must not be conflated, and future experiments should
+regenerate classifier training data with exactly the same teacher
+implementation or train a representation-agnostic downstream probe.
+
+Within the tested protocol, the answer to the primary question is negative:
+direct neural regression does not replace SHARP while preserving sparse motion
+and HAR utility. The most justified next model is hybrid: apply explicit affine
+or SHARP-like phase sanitization first, then learn the remaining fixed
+time--frequency mapping or a residual correction. Unrolling the sparse
+estimator, as in learned optimization, is another defensible direction. We do
+not claim an end-to-end speedup because preprocessing timings were collected on
+different hardware and did not cover equivalent stages.
