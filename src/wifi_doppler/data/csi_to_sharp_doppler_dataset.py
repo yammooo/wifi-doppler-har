@@ -20,6 +20,16 @@ SHARP_DELETED_SUBCARRIERS = np.asarray(
 )
 NUM_SHARP_DATA_SUBCARRIERS = 256 - len(SHARP_DELETED_SUBCARRIERS)
 
+def canonical_scenario(name: str) -> str:
+        """Normalize legacy, lowercase, or unhyphenated scenario folder names."""
+        clean = name.strip().upper().replace("_", "").replace("-", "")
+        if clean.startswith("S"):
+            return f"AR-{clean[1:]}"
+        for prefix in ("AR", "PC", "PI"):
+            if clean.startswith(prefix):
+                rest = clean[len(prefix):]
+                return f"{prefix}-{rest}" if rest else prefix
+        return os.name.upper()
 
 @dataclass
 class CsiDopplerPairRecording:
@@ -40,6 +50,8 @@ class CsiDopplerPairRecording:
     _raw: np.ndarray | None = field(default=None, init=False, repr=False)
     _doppler: np.ndarray | None = field(default=None, init=False, repr=False)
 
+
+    
     @property
     def length(self) -> int:
         """Number of Doppler time frames."""
@@ -50,6 +62,7 @@ class CsiDopplerPairRecording:
         if self.repetition:
             return f"{self.scenario}_{self.label}{self.repetition}"
         return f"{self.scenario}_{self.label}"
+
 
     def load_raw(self) -> np.ndarray:
         """Load raw SHARP/Nexmon CSI as [antenna, subcarrier, packet_time]."""
@@ -228,10 +241,18 @@ class CsiToSharpDopplerDataset(WindowedTraceDataset):
 
     def _collect_doppler_groups(self) -> dict[tuple[str, str, str], list[Path]]:
         groups: dict[tuple[str, str, str], list[Path]] = {}
+        available_dirs = {path.name: path for path in self.doppler_root.iterdir() if path.is_dir()}
+        
         for scenario in self.scenarios:
-            scenario_dir = self.doppler_root / scenario
+            matched_dir_name = next(
+                (name for name in available_dirs if canonical_scenario(name) == canonical_scenario(scenario)),
+                scenario
+            )
+            scenario_dir = self.doppler_root / matched_dir_name
             if not scenario_dir.is_dir():
                 raise FileNotFoundError(f"Missing Doppler scenario directory: {scenario_dir}")
+            
+            canonical_name = canonical_scenario(scenario)
 
             for entry in os.scandir(scenario_dir):
                 if not entry.is_file():
@@ -239,7 +260,7 @@ class CsiToSharpDopplerDataset(WindowedTraceDataset):
                 info = parse_trace_filename(entry.name)
                 if not info:
                     continue
-                key = (scenario, str(info["label"]), str(info["repetition"]))
+                key = (canonical_name, str(info["label"]), str(info["repetition"]))
                 antenna = int(info["antenna"])
                 groups.setdefault(key, [None] * 4)
                 groups[key][antenna] = Path(entry.path)
@@ -254,14 +275,23 @@ class CsiToSharpDopplerDataset(WindowedTraceDataset):
     def _collect_raw_paths(self) -> dict[tuple[str, str, str], Path]:
         paths: dict[tuple[str, str, str], Path] = {}
         for scenario in self.scenarios:
-            raw_dir = self.raw_root / raw_scenario_dir(scenario)
-            if not raw_dir.is_dir():
-                raise FileNotFoundError(f"Missing raw CSI scenario directory: {raw_dir}")
+            canonical_name = canonical_scenario(scenario)
+            candidates = [self.raw_root / canonical_name, self.raw_root / scenario]
+            raw_dir_candidate = self.raw_root / raw_scenario_dir(canonical_name)
+            if raw_dir_candidate not in candidates:
+                candidates.append(raw_dir_candidate)
+                
+            raw_dir = next((path for path in candidates if path.is_dir()), None)
+            if raw_dir is None:
+                expected = ", ".join(str(path) for path in candidates)
+                raise FileNotFoundError(
+                    f"Missing raw CSI scenario directory; expected one of: {expected}"
+                )
 
             for entry in os.scandir(raw_dir):
                 if not entry.is_file() or not entry.name.endswith(".mat"):
                     continue
-                key = raw_file_key(scenario, Path(entry.name).stem)
+                key = raw_file_key(canonical_name, Path(entry.name).stem)
                 if key is not None:
                     paths[key] = Path(entry.path)
         return paths
@@ -334,26 +364,33 @@ def build_subcarrier_views(
 
 
 def raw_scenario_dir(doppler_scenario: str) -> str:
-    if doppler_scenario.startswith("S"):
-        return f"AR-{doppler_scenario[1:]}"
-    return doppler_scenario
+    canonical = canonical_scenario(doppler_scenario)
+    if canonical.startswith("S"):
+        return f"AR-{canonical[1:]}"
+    return canonical
 
 
 def raw_file_key(doppler_scenario: str, raw_stem: str) -> tuple[str, str, str] | None:
-    if doppler_scenario.startswith("S"):
-        prefix = f"AR{doppler_scenario[1:]}_"
-        if not raw_stem.startswith(prefix):
+    canonical = canonical_scenario(doppler_scenario)
+    if canonical.startswith("AR-"):
+        num_part = canonical[3:]
+        prefixes = (f"AR-{num_part}_", f"AR{num_part}_", f"S{num_part}_")
+        prefix = next((value for value in prefixes if raw_stem.startswith(value)), None)
+        if prefix is None:
             return None
         token = raw_stem[len(prefix) :]
+        if not token:
+            return None
         label = token[:1]
-        repetition = token[1:]
-        return doppler_scenario, label, repetition
+        repetition = token[1:].lstrip("_")
+        return canonical, label, repetition
 
-    prefix = doppler_scenario.replace("-", "")
-    if not raw_stem.startswith(prefix + "_"):
-        return None
-    return doppler_scenario, raw_stem[len(prefix) + 1 :], ""
-
+    prefix = canonical.replace("-", "")
+    if raw_stem.startswith(prefix + "_"):
+        return canonical, raw_stem[len(prefix) + 1 :], ""
+    if raw_stem.startswith(canonical + "_"):
+        return canonical, raw_stem[len(canonical) + 1 :], ""
+    return None
 
 def _load_doppler_stream(path: Path, target_transform: str = "none") -> np.ndarray:
     with path.open("rb") as fp:

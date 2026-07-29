@@ -15,6 +15,17 @@ import numpy as np
 DEFAULT_SCENARIOS = ("PI-1a", "PI-2a", "PI-3a", "PI-4a")
 
 
+def canonical_scenario(name: str) -> str:
+    """Normalize legacy, lowercase, or unhyphenated scenario folder names."""
+    clean = name.strip().upper().replace("_", "").replace("-", "")
+    if clean.startswith("S"):
+        return f"AR-{clean[1:]}"
+    for prefix in ("AR", "PC", "PI"):
+        if clean.startswith(prefix):
+            rest = clean[len(prefix):]
+            return f"{prefix}-{rest}" if rest else prefix
+    return name.upper()
+
 def add_src_to_path(project_root: Path) -> None:
     src_dir = project_root / "src"
     if str(src_dir) not in sys.path:
@@ -51,16 +62,24 @@ def resolve_path(project_root: Path, path: Path) -> Path:
 def resolve_scenarios(doppler_root: Path, selectors: list[str]) -> list[str]:
     available = sorted(path.name for path in doppler_root.iterdir() if path.is_dir())
     scenarios: list[str] = []
+    canonical_seen: set[str] = set()
     for selector in selectors:
         if selector.lower() == "all":
             matches = available
         elif selector.upper() in {"AR", "PC", "PI"}:
-            matches = [name for name in available if name.startswith(f"{selector.upper()}-")]
+            family = selector.upper()
+            matches = [
+                name
+                for name in available
+                if canonical_scenario(name).startswith(f"{family}-")
+            ]
         else:
-            matches = [selector]
+            matches = [name for name in available if canonical_scenario(name) == canonical_scenario(selector)]
         for scenario in matches:
-            if scenario not in scenarios:
+            canonical = canonical_scenario(scenario)
+            if canonical not in canonical_seen:
                 scenarios.append(scenario)
+                canonical_seen.add(canonical)
     if not scenarios:
         raise ValueError(f"No scenarios matched {selectors} under {doppler_root}")
     return scenarios
@@ -178,6 +197,7 @@ def main() -> None:
         )
         try:
             for recording in dataset.traces:
+                recording.scenario = canonical_scenario(recording.scenario)  # <--- AGGIUNGI QUESTA RIGA
                 item = convert_recording(recording, output_root, overwrite=args.overwrite)
                 key = (item["scenario"], item["label"], item["repetition"])
                 recordings_by_key[key] = item
@@ -187,8 +207,10 @@ def main() -> None:
     source = {
         "raw_root": str(raw_root),
         "doppler_root": str(doppler_root),
-        "scenarios": sorted(scenarios),
+        "scenarios": sorted(canonical_scenario(scenario) for scenario in scenarios),
+        "doppler_scenarios": sorted(scenarios),
     }
+    
     if source not in sources:
         sources.append(source)
     recordings = sorted(
