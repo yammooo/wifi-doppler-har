@@ -58,7 +58,7 @@ training:
     wasserstein_weight: 0.05
   sampling:
     mode: all
-  batch_size: 768
+  batch_size: 256
   recordings_per_batch: 12
   window_shuffle_chunk_size: 8
   batch_preparation_workers: 11
