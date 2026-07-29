@@ -2249,15 +2249,79 @@ Both train on all 12 legacy scenarios over 0-80%. Source validation covers all
 `S1a/S1b/S1c` over 80-90% and 90-100%, respectively. W&B runs and downstream
 classifier results are pending.
 
+### Legacy-SHARP retraining and corrected final comparison
+
+**Runs and checkpoints**
+
+- Full-resolution:
+  [`az9k6ori`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/az9k6ori),
+  completed 50 epochs, selected epoch 45, checkpoint SHA-256
+  `01e0b11e389df3c4d6f40e5d7528de53cbe676dc81e28585476e4fe1e2dcebec`.
+- Small spatial head:
+  [`hpm4mjl4`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/hpm4mjl4),
+  stopped at epoch 29, selected epoch 21, checkpoint SHA-256
+  `67a682227b393b348ea7fee0d2777a4d9521e51bbdb073e14ed09b1d2e4b2243`.
+
+For `az9k6ori`, train loss fell from `0.03397` to `0.01264`, all-scenario
+validation from `0.02800` to `0.01415`, and S1 validation from `0.02506` to
+`0.01326`. The selected S1 validation minimum was `0.01212` at epoch 45.
+There is no widening train/validation gap. Fixed held-out maps show correctly
+timed and correctly sided off-center responses, although thin peaks are
+broadened and nearby events merge. This supersedes the center-ridge-collapse
+diagnosis made from the recomputed-target run.
+
+**Corrected classifier-fidelity protocol**
+
+The final evaluator uses only official S1a/S1b/S1c SHARP maps over 90-100%,
+stride 30, guard 31, and labels E/L/W/R/J. It covers 718 identical windows for
+every method. The direct legacy loader and prepared-target loader produce
+identical classifier predictions and `91.36%` accuracy, proving that teacher,
+student supervision, and classifier provenance now match. Results are saved in
+`experiments/runs/doppler_classifier_fidelity/legacy_sharp_results.json`.
+
+| Method | Accuracy | Off-center MSE | Precision | Recall | Active F1 | Mass ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Official SHARP | **91.36%** | 0 | 100% | 100% | 100% | 1.00 |
+| Raw fixed STFT | 21.73% | 0.128148 | 21.70% | 99.94% | 35.65% | 33.28 |
+| Affine + fixed STFT | **91.36%** | **0.000155** | 94.58% | 94.00% | **94.29%** | **0.98** |
+| `az9k6ori` | 63.09% | 0.001062 | 68.21% | 85.38% | 75.83% | 1.21 |
+| `hpm4mjl4` | 43.31% | 0.002758 | 35.33% | 88.41% | 50.49% | 2.22 |
+
+The full-resolution student improves by 19.78 accuracy points over the small
+head. Their 95% Wilson intervals do not overlap (`59.50-66.54%` versus
+`39.74-46.97%`). The architectural corrections therefore matter when the
+target is valid.
+
+The remaining failure is class-specific rather than a lack of motion
+detection. `az9k6ori` scores 100% on E, 99.36% on L, and 91.67% on R, but only
+1.30% on W and 1.98% on J. It maps 152/154 walking and 92/101 jumping windows
+to running. Its smoothed maps preserve event support but erase the
+time-Doppler shape required to separate dynamic activities.
+
+Affine-STFT remains the strongest result. It has the same 656/718 correct
+predictions and Wilson interval as official SHARP, agrees with SHARP decisions
+on 98.33% of windows, and is also much closer in map space. This is evidence
+for retaining explicit phase sanitization, not evidence that the neural task
+is impossible.
+
+**Revised decision**
+
+The primary RQ now has a mixed answer: direct regression learns a substantial
+held-out approximation, but `63.09%` is not sufficient to replace SHARP at
+`91.36%`. The report must exclude the recomputed-target table from its final
+claims and use this matched comparison. The best next model remains a hybrid
+that applies explicit phase correction before learning a residual or
+downstream transform.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
   decisions and motion geometry sufficient?
 - How much of SHARP's phase sanitization is recoverable from a local raw window?
-- Does using all 242 cleaned carriers close the PI-4a gap?
-- Is target-domain failure primarily normalization statistics, environment
-  shift, person shift, or missing carrier/history information?
-- Which metrics correlate with downstream HAR accuracy? Global MSE and global
-  peak-bin MAE currently do not establish motion fidelity.
+- Which inductive bias or objective can preserve the sharp spectral geometry
+  needed to separate walking and jumping from running?
+- How stable are the student results across random seeds?
+- What is the equivalent end-to-end latency of SHARP, affine-STFT, and the
+  neural student on the same hardware?
 - Should the student approximate intermediate sanitized CSI instead of the
   final normalized Doppler map?

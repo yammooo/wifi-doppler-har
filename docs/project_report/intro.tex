@@ -39,18 +39,17 @@ method:
     \item a progressively corrected architecture and training setup addressing
     antenna sharing, subcarrier structure, temporal support, sparse motion, and
     Doppler locality;
-    \item experimental evidence that direct regression can memorize the mapping
-    but does not generalize it, while explicit affine correction is a much
-    stronger baseline and MSE can rank representations incorrectly.
+    \item evidence that a full-resolution student partially preserves held-out
+    motion and HAR utility, together with a class-level analysis of the
+    remaining smoothing failure and a stronger explicit affine baseline.
 \end{itemize}
 
-\figref{fig:pipeline} summarizes the comparison. Pixel fidelity is measured
-against recomputed SHARP targets, whereas task fidelity is measured by sending
-each representation through one frozen classifier. This distinction becomes
-essential because the recomputed and legacy SHARP distributions are not
-interchangeable. The rest of the report reviews related representations,
-defines the data and learning problem, presents the final model and loss, and
-answers the research questions experimentally.
+\figref{fig:pipeline} summarizes the comparison. Both pixel fidelity and
+classifier utility use the official precomputed SHARP representation: students
+regress its maps, and each generated representation is sent through a classifier
+trained on the same map distribution. The rest of the report reviews related
+representations, defines the data and learning problem, presents the final model
+and loss, and answers the research questions experimentally.
 
 \begin{figure*}[t]
     \centering
@@ -58,6 +57,6 @@ answers the research questions experimentally.
     \caption{Evaluation design. Raw CSI is transformed by the SHARP teacher, a
     direct neural student, or a simple affine phase correction followed by the
     same fixed Hann/STFT tail. Reconstruction metrics compare maps with the
-    recomputed teacher; a frozen legacy SHARP classifier measures HAR utility.}
+    official SHARP target; a frozen classifier measures retained HAR utility.}
     \label{fig:pipeline}
 \end{figure*}

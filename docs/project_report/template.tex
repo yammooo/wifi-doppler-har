@@ -37,11 +37,15 @@ We study whether an end-to-end network can replace the optimization-intensive fr
 We build a reproducible teacher--student pipeline and progressively correct antenna coupling, subcarrier processing, temporal alignment, spectral resolution, motion imbalance, and loss design.
 The final 1.314-million-parameter model uses shared antenna weights, a frequency--time encoder, and a full-resolution two-dimensional decoder.
 Reconstruction fidelity is evaluated separately from task utility with a frozen SHARP classifier.
-Models using either 30 or 242 subcarriers memorize 16 windows to approximately \(4\times10^{-5}\) MSE, yet full-data students collapse toward a smooth center-spectrum shortcut.
-On held-out data, the best neural model reaches only \(40.89\%\) classifier accuracy, versus \(91.36\%\) for legacy SHARP.
-Conversely, a non-learned affine phase correction followed by the fixed Doppler transform reaches \(91.52\%\), while recomputed SHARP targets themselves reach \(36.86\%\) under the legacy classifier.
-Thus, decoder capacity and pixel losses do not resolve the raw-CSI phase nuisance, and map metrics can misrank task utility.
-The results motivate hybrid models that learn after explicit phase sanitization rather than replacing it.
+When trained against the official SHARP maps, the full-resolution student
+localizes held-out motion and reaches \(63.09\%\) frozen-classifier accuracy,
+substantially above a coarse spatial-head model at \(43.31\%\), but it smooths
+spectral detail and confuses walking and jumping with running. Legacy SHARP
+reaches \(91.36\%\). A non-learned affine phase correction followed by the
+fixed Doppler transform also reaches \(91.36\%\), with \(94.3\%\) active-frame
+F1 versus \(75.8\%\) for the best student. Direct regression therefore learns
+part of the transformation but is not a drop-in SHARP replacement. The results
+favor hybrid models that retain explicit phase sanitization.
 \end{abstract}
 
 \begin{IEEEkeywords}

@@ -3,77 +3,83 @@
 
 \subsection{Protocol and Metrics}
 
-The frozen classifier is the reproduced SHARP network trained on legacy
+The frozen classifier is the reproduced SHARP network trained on official
 S1a/S1b/S1c maps from the \(0\)--\(60\%\) recording interval and selected on
-\(60\)--\(80\%\). No classifier weights are updated in this study. Final
-evaluation uses AR-1a/1b/1c windows from \(90\)--\(100\%\), with labels mapped
-to the same five activities and a stride of 30. Each generator receives
-identical raw windows, and the recording-mean centering expected by the
-classifier is estimated independently for each representation. This
-normalization is label-free and shared by all methods.
+\(60\)--\(80\%\). No classifier weights are updated. Final evaluation uses the
+same scenarios over the disjoint \(90\)--\(100\%\) interval, with stride 30 and
+718 windows from the five classifier activities. Each method receives
+identical raw windows. The recording-mean centering expected by the classifier
+is estimated independently for every representation and does not use labels.
 
-We report full-map MSE and off-center MSE against recomputed targets. To measure
-motion support, a frame is active when its maximum outside bins 45--55 exceeds
-0.2. Precision, recall, and F1 compare predicted and target active frames. The
-motion-mass ratio is total predicted divided by target off-center excess power;
-one is ideal, values above one indicate leakage, and values below one indicate
-suppression. Classifier accuracy is the primary task metric.
+We report full-map and off-center MSE against the official SHARP target. A frame
+is active when its maximum outside bins 45--55 exceeds 0.2; precision, recall,
+and F1 compare predicted and target support. The motion-mass ratio is total
+predicted divided by target off-center excess power, with one ideal. Frozen
+classifier accuracy is the primary task metric. Loading the targets through
+the prepared-data path reproduces all 718 direct SHARP predictions, confirming
+that map and classifier provenance are aligned.
 
 \subsection{RQ1: Can the Student Learn the Mapping?}
 
 \textbf{Memorization sanity check.}
-Before interpreting full-data failure, two students were optimized repeatedly
-on the same 16 motion-rich PI windows. With 30 subcarriers, run
-\texttt{cwj0myug} reached \(3.881\times10^{-5}\) MSE; with all 242,
-\texttt{tm8nyt19} reached \(4.194\times10^{-5}\). Both reproduced the selected
-peaks visually. Thus, the implementation is differentiable, the optimizer can
-reach a precise solution, and the models have enough capacity to memorize the
-local transform. This test does not demonstrate invariance or generalization.
+Before full-data training, two students were optimized repeatedly on the same
+16 motion-rich PI windows. With 30 subcarriers, run \texttt{cwj0myug} reached
+\(3.881\times10^{-5}\) MSE; with all 242, \texttt{tm8nyt19} reached
+\(4.194\times10^{-5}\). Both reproduced the selected peaks. Thus, the
+implementation is differentiable and has sufficient capacity to memorize the
+local transform, although this test says nothing about generalization.
 
-\textbf{Full-data behavior.}
-In the final AR run, training loss decreased from 0.0499 to 0.0303, while
-all-AR validation decreased from 0.0382 to 0.0296. AR-1a/1b/1c validation was
-noisy (0.0209--0.0398) but did not develop a growing train--validation gap; the
-best value, 0.02093, occurred at epoch 17. \figref{fig:diagnostics} contrasts
-this behavior with the tiny-set test. Because the sampled training distribution
-is intentionally motion-balanced while validation is natural, absolute train
-and validation losses are not directly comparable. Nevertheless, their joint
-plateau and the persistent visual error indicate \emph{functional
-underfitting}: aggregate loss improves without learning when and where sparse
-motion occurs.
+\textbf{Matched full-data behavior.}
+With official SHARP supervision, run \texttt{az9k6ori} behaves very differently
+from the preliminary students. Motion-aware training loss decreases from
+0.03397 to 0.01264 over all 50 epochs. All-scenario validation decreases from
+0.02800 to 0.01415, while S1a/S1b/S1c validation decreases from 0.02506 to
+0.01326 and reaches its minimum, 0.01212, at epoch 45. There is no widening
+train--validation gap. Because training is motion-balanced while validation is
+natural, their absolute values are not directly comparable, but their joint
+late improvement is evidence against both early collapse and classic
+overfitting.
 
 \begin{figure*}[t]
     \centering
     \includegraphics[width=\textwidth]{diagnostics.pdf}
     \caption{Optimization diagnostics. (a) Both 30- and 242-subcarrier models
-    memorize 16 fixed windows. (b) On full AR data, train and validation losses
-    plateau together; the dashed line marks the restored epoch-17 checkpoint.
-    Curves are exported from W\&B runs \texttt{cwj0myug},
-    \texttt{tm8nyt19}, and \texttt{xhg1tsta}.}
+    memorize 16 fixed windows. (b) With official SHARP supervision, full-data
+    train and validation objectives improve throughout training; the dashed
+    line marks the selected epoch-45 checkpoint. Curves come from W\&B runs
+    \texttt{cwj0myug}, \texttt{tm8nyt19}, and \texttt{az9k6ori}.}
     \label{fig:diagnostics}
 \end{figure*}
 
-The fixed held-out example in \figref{fig:qualitative} shows the same failure.
-The student reproduces the dominant zero-Doppler ridge and roughly localizes
-some event times, but spreads energy into a broad halo and misses the target's
-thin off-center peaks. This is no longer the original independent-output-channel
-artifact: it persists after antenna sharing, full frequency processing, direct
-100-bin prediction, and exact temporal alignment.
+The held-out example in \figref{fig:qualitative} confirms genuine conditional
+learning. The student places off-center responses at the target event times and
+on the correct side of the spectrum. Its main error is now spatial smoothing:
+thin target peaks become wider lobes, and nearby temporal events merge. The
+full-resolution frequency-aware decoder therefore removes the center-only
+shortcut, but does not preserve all fine motion geometry.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{qualitative.pdf}
+    \caption{Held-out S1a\_C window 16920--17260 with identical color limits.
+    The full-resolution student localizes the principal target events but
+    broadens them; affine-STFT retains sharper time--Doppler structure.}
+    \label{fig:qualitative}
+\end{figure*}
 
 \subsection{RQ2: Do Reconstruction Metrics Predict HAR Utility?}
 
-\tabref{tab:main-results} compares six representations. Legacy SHARP provides
-the classifier reference at \(91.36\%\). A raw 31-packet Hann/STFT transform
-fails at \(21.70\%\) and produces \(68.08\times\) the target motion mass,
-confirming that a fixed spectrum alone does not remove nuisance phase. The final
-full-resolution student improves accuracy to \(40.89\%\), but remains far from
-a usable replacement.
+\tabref{tab:main-results} gives the matched comparison. The full-resolution
+student reaches \(63.09\%\), a 19.78-point improvement over the coarse
+spatial-head model and well above raw STFT. Its 95\% Wilson interval is
+\(59.50\)--\(66.54\%\), disjoint from the smaller model's
+\(39.74\)--\(46.97\%\). The architectural improvement is therefore reflected
+in both map and downstream metrics.
 
 \begin{table*}[t]
 \centering
-\caption{Held-out AR-1a/1b/1c comparison. Map metrics use recomputed SHARP as
-the target; classifier accuracy uses the frozen legacy SHARP classifier. Values
-for the recomputed reference are tautological in map space.}
+\caption{Held-out official S1a/S1b/S1c comparison over the same 718 windows.
+All map metrics use the official SHARP maps as target.}
 \label{tab:main-results}
 \footnotesize
 \setlength{\tabcolsep}{8pt}
@@ -82,73 +88,61 @@ for the recomputed reference are tautological in map space.}
 Representation & Classifier accuracy (\%) & Off-center MSE & Active F1 &
 Motion-mass ratio & Role \\
 \hline
-Legacy SHARP & 91.36 & -- & -- & -- & classifier reference \\
-Recomputed SHARP & 36.86 & 0 & 1.000 & 1.00 & regression target \\
-Raw fixed STFT & 21.70 & 0.129644 & 0.246 & 68.08 & signal baseline \\
-Affine correction + fixed STFT & \textbf{91.52} & 0.001408 & \textbf{0.589} & 2.01 & phase-aware baseline \\
-Full-resolution student (\texttt{xhg1tsta}) & \textbf{40.89} & 0.001944 & 0.246 & 3.24 & best neural accuracy \\
-Small spatial-head student (\texttt{3wrefrft}) & 23.64 & \textbf{0.000971} & 0.242 & \textbf{0.49} & best neural MSE \\
+Official SHARP & \textbf{91.36} & 0 & 1.000 & 1.00 & teacher/reference \\
+Raw fixed STFT & 21.73 & 0.128148 & 0.357 & 33.28 & signal baseline \\
+Affine correction + fixed STFT & \textbf{91.36} & \textbf{0.000155} & \textbf{0.943} & \textbf{0.98} & phase-aware baseline \\
+Full-resolution student (\texttt{az9k6ori}) & 63.09 & 0.001062 & 0.758 & 1.21 & best neural model \\
+Spatial-head student (\texttt{hpm4mjl4}) & 43.31 & 0.002758 & 0.505 & 2.22 & coarse decoder \\
 \hline
 \end{tabular}
 \end{table*}
 
-The metric ordering is inconsistent with task utility. The smaller student has
-the lowest off-center MSE, \(9.71\times10^{-4}\), but only \(23.64\%\)
-accuracy. It suppresses motion: recall is \(17.16\%\) and its mass ratio is
-0.49. The final student takes the opposite shortcut: recall is \(99.78\%\), but
-precision is \(14.06\%\) and motion mass is \(3.24\times\) the target. Its F1 is
-therefore almost identical to the smaller model despite much greater recall.
-Low pixel error is dominated by the large stationary background and cannot
-distinguish these functionally different failures.
+Aggregate improvement does not imply that the neural representation is
+classifier-equivalent. The full model is nearly perfect for empty-room and
+still cases (\(100\%\) for E and \(99.36\%\) for L) and reaches \(91.67\%\) on
+running, but only \(1.30\%\) on walking and \(1.98\%\) on jumping. Specifically,
+152 of 154 walking windows and 92 of 101 jumping windows are classified as
+running. Its balanced accuracy is therefore \(58.86\%\), below its aggregate
+\(63.09\%\). The student has learned whether and approximately where motion
+occurs, as supported by F1 \(0.758\) and mass ratio 1.21, but smoothing removes
+the spectral and temporal details needed to distinguish dynamic activities.
 
-\begin{figure*}[t]
-    \centering
-    \includegraphics[width=\textwidth]{qualitative.pdf}
-    \caption{Held-out AR-1a\_C window 16920--17260, with identical color limits.
-    Two motion-rich antennas are shown. The neural student produces a smooth
-    center ridge and broad halo; affine-STFT does not exactly reproduce the
-    recomputed target, but restores temporally localized off-center motion that
-    remains useful to the classifier.}
-    \label{fig:qualitative}
-\end{figure*}
+In this provenance-matched experiment, off-center MSE and support F1 broadly
+rank the methods in the same order as classifier accuracy. They remain
+insufficient by themselves: active support treats a broad running-like lobe as
+successful even when it erases class-discriminative shape. Reconstruction and
+task metrics must therefore be reported together.
 
 \subsection{RQ3: What Does Explicit Phase Correction Reveal?}
 
 The affine baseline unwraps each antenna's subcarrier phase, fits the
 packet-wise phase difference from the first packet as
-\(\alpha_t s+\beta_t\) by least squares, subtracts it, and then applies the
-same fixed Hann/STFT tail as the raw baseline. It is not proposed as a novel
-algorithm. Yet it reaches \(91.52\%\) classifier accuracy and \(58.93\%\)
-active-frame F1. Its 95\% Wilson interval, \(89.25\)--\(93.34\%\), overlaps the
-legacy SHARP interval, \(89.08\)--\(93.21\%\); the result is a match, not a
-statistically supported improvement.
+\(\alpha_t s+\beta_t\) by least squares, subtracts it, and applies the fixed
+Hann/STFT tail. It is not proposed as a novel algorithm. Nevertheless, it
+matches SHARP at \(91.36\%\) accuracy; both share the Wilson interval
+\(89.08\)--\(93.21\%\). It agrees with SHARP's decisions on \(98.33\%\) of
+windows and obtains off-center MSE \(1.55\times10^{-4}\), F1 \(0.943\), and
+motion-mass ratio 0.982.
 
-This comparison changes the diagnosis. The desired task representation can be
-recovered from these windows by a simple explicit nuisance model, so the
-failure is not evidence that raw CSI contains insufficient motion information.
-Instead, direct regression asks a finite convolutional model to infer
-packet-dependent phase invariance, spectral estimation, and the teacher's
-postprocessing simultaneously from an imbalanced pixel objective. The
-architectural corrections remove clear implementation flaws, but they do not
-encode that invariance. Increasing decoder capacity or motion-loss weights is
-therefore unlikely to address the main bottleneck.
+This establishes that the local raw windows contain enough information for a
+high-utility representation. It also isolates the main remaining neural error:
+the direct student learns substantial phase robustness and event localization,
+but its generic decoder approximates sharp sparse structure by conditional
+averages. Retaining an explicit nuisance-phase model is both more accurate and
+easier to justify than increasing CNN capacity again.
 
 \subsection{Limitations and Answer to the RQ}
 
-The strongest limitation is target provenance. Recomputed SHARP maps obtain
-only \(36.86\%\) accuracy under the legacy classifier even though they are the
-student's exact supervision. This means frozen-classifier accuracy measures
-compatibility with the legacy representation as well as motion quality.
-Conversely, reconstruction metrics are valid only relative to the recomputed
-teacher. The two axes must not be conflated, and future experiments should
-regenerate classifier training data with exactly the same teacher
-implementation or train a representation-agnostic downstream probe.
+The experiments use one seed, one frozen classifier, and 92 aligned legacy AR
+recordings; five candidate pairs are excluded for temporal mismatch. The
+classifier test measures compatibility with SHARP's established interface, not
+the performance of a newly trained classifier adapted to student maps. No
+equivalent end-to-end runtime comparison is available.
 
-Within the tested protocol, the answer to the primary question is negative:
-direct neural regression does not replace SHARP while preserving sparse motion
-and HAR utility. The most justified next model is hybrid: apply explicit affine
-or SHARP-like phase sanitization first, then learn the remaining fixed
-time--frequency mapping or a residual correction. Unrolling the sparse
-estimator, as in learned optimization, is another defensible direction. We do
-not claim an end-to-end speedup because preprocessing timings were collected on
-different hardware and did not cover equivalent stages.
+The answer to the primary question is therefore mixed but operationally
+negative. Direct regression can learn a meaningful approximation: the corrected
+model generalizes event support and reaches \(63.09\%\), so the task is not
+infeasible. It does not preserve enough fine structure to replace SHARP at
+\(91.36\%\), especially for walking and jumping. A phase-aware hybrid that
+sanitizes CSI explicitly and learns only a residual or downstream transform is
+the most justified next design.

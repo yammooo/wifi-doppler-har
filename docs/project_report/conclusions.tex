@@ -1,17 +1,15 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-This study tested whether a convolutional student could replace SHARP
-preprocessing by mapping raw CSI windows directly to Doppler maps. The students
-could memorize small sets, but even the corrected shared-antenna,
-frequency-aware 2-D model converged to a center-ridge shortcut and reached only
-\(40.89\%\) frozen-classifier accuracy. In contrast, explicit affine phase
-correction followed by the fixed Doppler transform matched legacy SHARP at
-\(91.52\%\). The main lesson is that phase invariance matters more here than
-decoder capacity or stronger pixel losses, and that MSE is not a reliable proxy
-for HAR utility. A key difficulty was target provenance: recomputed SHARP maps
-themselves were poorly matched to the legacy classifier. Future work should
-align teacher and classifier data, then learn from sanitized CSI or unroll the
-sparse phase-correction stage. The affine method is immediately applicable as a
-strong, explicit baseline, but equivalent end-to-end runtime remains to be
-measured.
+Direct raw-CSI regression is feasible but is not yet a SHARP replacement.
+With official teacher supervision, the corrected shared-antenna,
+frequency-aware model localizes held-out motion and reaches \(63.09\%\)
+frozen-classifier accuracy. However, smoothed peaks erase distinctions between
+walking, jumping, and running, leaving a large gap to SHARP's \(91.36\%\).
+Explicit affine phase correction followed by the fixed Doppler transform also
+reaches \(91.36\%\), with substantially better map and motion-support fidelity.
+The main lesson is not that neural approximation fails completely, but that
+target consistency, phase invariance, and sharp spectral geometry matter more
+than decoder size alone. Future work should learn after explicit sanitization
+or unroll the sparse phase stage, and should measure equivalent end-to-end
+runtime and repeated-seed uncertainty.

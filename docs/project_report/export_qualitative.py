@@ -1,4 +1,4 @@
-"""Export one fixed AR test window for the report's qualitative comparison."""
+"""Export one fixed legacy-SHARP test window for the report comparison."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prepared-root", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--recording", default="AR-1a_C")
+    parser.add_argument("--recording", default="S1a_C")
     parser.add_argument("--start", type=int, default=16920)
     parser.add_argument("--device", default="auto")
     return parser.parse_args()

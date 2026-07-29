@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--final-history",
         type=Path,
-        default=root / "data/xhg1tsta_epoch_history.csv",
+        default=root / "data/az9k6ori_epoch_history.csv",
     )
     parser.add_argument(
         "--overfit-30-history",
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--qualitative",
         type=Path,
-        default=root / "data/ar1a_c_16920_comparison.npz",
+        default=root / "data/s1a_c_16920_legacy_comparison.npz",
     )
     parser.add_argument("--output-dir", type=Path, default=root)
     return parser.parse_args()
@@ -62,12 +62,12 @@ def setup_style() -> None:
     )
 
 
-def box(ax, x, y, width, height, text, color=GRAY, fontsize=7):
+def box(ax, x, y, width, height, text, color=GRAY, fontsize=6.5):
     patch = FancyBboxPatch(
         (x, y),
         width,
         height,
-        boxstyle="round,pad=0.012,rounding_size=0.015",
+        boxstyle="round,pad=0.003,rounding_size=0.008",
         facecolor=LIGHT,
         edgecolor=color,
         linewidth=1.2,
@@ -92,81 +92,81 @@ def arrow(ax, start, end, color=GRAY, connectionstyle="arc3"):
             "arrowstyle": "-|>",
             "color": color,
             "lw": 1.1,
-            "shrinkA": 2,
-            "shrinkB": 2,
+            "shrinkA": 0.5,
+            "shrinkB": 0.5,
             "connectionstyle": connectionstyle,
         },
     )
 
 
 def make_pipeline(output_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(7.15, 1.72))
+    fig, ax = plt.subplots(figsize=(7.15, 2.00))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
 
-    box(ax, 0.01, 0.37, 0.12, 0.25, "Raw complex CSI\n$4\\times242\\times370$", BLUE)
+    box(ax, 0.015, 0.38, 0.13, 0.24, "Raw complex CSI\n$4\\times242\\times370$", BLUE)
     paths = [
         (0.72, "SHARP teacher\nsparse paths + phase\nsanitization", BLUE),
-        (0.38, "Neural student\ndirect map regression", RED),
-        (0.04, "Affine phase\ncorrection", GREEN),
+        (0.39, "Neural student\ndirect map regression", RED),
+        (0.06, "Affine phase\ncorrection", GREEN),
     ]
     for y, label, color in paths:
-        box(ax, 0.20, y, 0.20, 0.22, label, color)
-        arrow(ax, (0.13, 0.495), (0.20, y + 0.11), color)
+        box(ax, 0.20, y, 0.22, 0.22, label, color)
+        arrow(ax, (0.145, 0.50), (0.20, y + 0.11), color)
 
-    box(ax, 0.47, 0.72, 0.16, 0.22, "SHARP Doppler\n(reference map)", BLUE)
-    box(ax, 0.47, 0.38, 0.16, 0.22, "Student Doppler", RED)
-    box(ax, 0.44, 0.04, 0.13, 0.22, "Fixed Hann\nSTFT", GREEN)
-    box(ax, 0.63, 0.04, 0.14, 0.22, "Affine-STFT\nDoppler", GREEN)
-    arrow(ax, (0.40, 0.83), (0.47, 0.83), BLUE)
-    arrow(ax, (0.40, 0.49), (0.47, 0.49), RED)
-    arrow(ax, (0.40, 0.15), (0.44, 0.15), GREEN)
-    arrow(ax, (0.57, 0.15), (0.63, 0.15), GREEN)
+    box(ax, 0.48, 0.72, 0.17, 0.22, "SHARP Doppler\n(reference map)", BLUE)
+    box(ax, 0.48, 0.39, 0.17, 0.22, "Student Doppler", RED)
+    box(ax, 0.46, 0.06, 0.14, 0.22, "Fixed Hann\nSTFT", GREEN)
+    box(ax, 0.67, 0.06, 0.15, 0.22, "Affine-STFT\nDoppler", GREEN)
+    arrow(ax, (0.42, 0.83), (0.48, 0.83), BLUE)
+    arrow(ax, (0.42, 0.50), (0.48, 0.50), RED)
+    arrow(ax, (0.42, 0.17), (0.46, 0.17), GREEN)
+    arrow(ax, (0.60, 0.17), (0.67, 0.17), GREEN)
 
-    box(ax, 0.83, 0.37, 0.15, 0.25, "Frozen SHARP\nHAR classifier", ORANGE)
-    arrow(ax, (0.63, 0.83), (0.83, 0.56), BLUE)
-    arrow(ax, (0.63, 0.49), (0.83, 0.49), RED)
-    arrow(ax, (0.77, 0.15), (0.83, 0.43), GREEN)
-    ax.text(0.55, 0.665, "pixel fidelity", ha="center", color=GRAY, fontsize=7)
+    box(ax, 0.85, 0.38, 0.135, 0.24, "Frozen SHARP\nHAR classifier", ORANGE)
+    arrow(ax, (0.65, 0.83), (0.85, 0.57), BLUE)
+    arrow(ax, (0.65, 0.50), (0.85, 0.50), RED)
+    arrow(ax, (0.82, 0.17), (0.85, 0.43), GREEN)
+    ax.text(0.65, 0.665, "pixel fidelity", ha="center", va="center", color=GRAY, fontsize=6.5)
     ax.annotate(
         "",
-        xy=(0.58, 0.60),
-        xytext=(0.58, 0.72),
-        arrowprops={"arrowstyle": "<->", "color": GRAY, "lw": 0.9},
+        xy=(0.565, 0.615),
+        xytext=(0.565, 0.715),
+        arrowprops={"arrowstyle": "<->", "color": GRAY, "lw": 0.9, "shrinkA": 1, "shrinkB": 1},
     )
-    ax.text(0.905, 0.31, "task fidelity", ha="center", color=GRAY, fontsize=7)
-    fig.savefig(output_dir / "pipeline.pdf", bbox_inches="tight")
+    ax.text(0.9175, 0.675, "task fidelity", ha="center", va="center", color=GRAY, fontsize=6.5)
+    fig.savefig(output_dir / "pipeline.pdf")
     plt.close(fig)
 
 
 def make_architecture(output_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(7.15, 2.10))
+    fig, ax = plt.subplots(figsize=(7.15, 2.20))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
 
     stages = [
-        (0.005, 0.105, 0.31, "Input\n$[B,A,242,$\n$370,2]$", BLUE),
-        (0.125, 0.140, 0.31, "Shared antennas\n$[BA,2,242,$\n$370]$", BLUE),
+        (0.010, 0.080, "Input\n$[B,A,242,$\n$370,2]$", BLUE),
+        (0.115, 0.120, "Shared antennas\n$[BA,2,242,$\n$370]$", BLUE),
         (
-            0.285,
-            0.185,
-            0.43,
+            0.260,
+            0.175,
             "2-D encoder\n$64\\!\\times\\!61\\!\\times\\!370$\n"
             "$96\\!\\times\\!31\\!\\times\\!185$\n"
             "$128\\!\\times\\!16\\!\\times\\!92$",
             GREEN,
         ),
-        (0.490, 0.140, 0.35, "Frequency mean\n+ $1\\!\\times\\!1$ conv\n$[BA,128,92]$", GREEN),
-        (0.650, 0.125, 0.31, "Direct grid\n$[BA,16,92,100]$", RED),
-        (0.795, 0.130, 0.37, "2-D decoder\n+ two skips\n$92\\!\\to\\!185\\!\\to\\!370$", RED),
-        (0.945, 0.050, 0.35, "Output\n$[B,A,$\n$340,100]$", ORANGE),
+        (0.460, 0.135, "Frequency mean\n+ $1\\!\\times\\!1$ conv\n$[BA,128,92]$", GREEN),
+        (0.620, 0.125, "Direct grid\n$[BA,16,$\n$92,100]$", RED),
+        (0.770, 0.135, "2-D decoder\n+ two skips\n$92\\!\\to\\!185\\!\\to\\!370$", RED),
+        (0.930, 0.060, "Output\n$[B,A,$\n$340,100]$", ORANGE),
     ]
     centers = []
-    for x, width, height, label, color in stages:
-        y = 0.40 if height < 0.4 else 0.34
-        box(ax, x, y, width, height, label, color, 6.5)
+    for x, width, label, color in stages:
+        height = 0.46
+        y = 0.34
+        box(ax, x, y, width, height, label, color, 5.7)
         centers.append((x, y, width, height))
     for left, right in zip(centers, centers[1:]):
         arrow(
@@ -176,30 +176,30 @@ def make_architecture(output_dir: Path) -> None:
         )
 
     ax.text(
-        0.35,
-        0.16,
-        "GroupNorm residual blocks preserve joint frequency-time structure",
+        0.4275,
+        0.19,
+        "GroupNorm residual blocks preserve\njoint frequency-time structure",
         ha="center",
         color=GREEN,
         fontsize=7,
     )
     ax.text(
-        0.72,
-        0.055,
-        "Direct 100-bin prediction; no spectral upsampling",
+        0.7625,
+        0.19,
+        "Direct 100-bin prediction;\nno spectral upsampling",
         ha="center",
         color=RED,
         fontsize=7,
     )
     ax.text(
         0.88,
-        0.86,
+        0.88,
         "exact valid crop: $15+340+15$",
         ha="center",
         color=ORANGE,
         fontsize=7,
     )
-    fig.savefig(output_dir / "architecture.pdf", bbox_inches="tight")
+    fig.savefig(output_dir / "architecture.pdf")
     plt.close(fig)
 
 
@@ -254,18 +254,18 @@ def make_diagnostics(
         final["epoch"],
         final["source_val/loss"],
         color=ORANGE,
-        label="all-AR validation",
+        label="all-scenario validation",
     )
     ax.plot(
         final["epoch"],
         final["target_val/loss"],
         color=GREEN,
-        label="AR-1a/b/c validation",
+        label="S1a/b/c validation",
     )
-    ax.axvline(17, color=RED, linestyle="--", linewidth=1, label="best checkpoint")
+    ax.axvline(45, color=RED, linestyle="--", linewidth=1, label="best checkpoint")
     ax.set_xlabel("epoch")
     ax.set_ylabel("motion-aware loss")
-    ax.set_title("(b) Final full-data experiment")
+    ax.set_title("(b) Official-SHARP full-data experiment")
     ax.grid(alpha=0.25)
     ax.legend(frameon=False, ncol=2, loc="upper right")
     fig.tight_layout(w_pad=1.4)
@@ -275,7 +275,7 @@ def make_diagnostics(
 
 def make_qualitative(path: Path, output_dir: Path) -> None:
     values = np.load(path)
-    methods = (("target", "Recomputed SHARP"), ("student", "Neural student"), ("affine", "Affine-STFT"))
+    methods = (("target", "Official SHARP"), ("student", "Neural student"), ("affine", "Affine-STFT"))
     antennas = (2, 3)
     fig, axes = plt.subplots(2, 3, figsize=(7.15, 3.25), sharex=True, sharey=True)
     image = None

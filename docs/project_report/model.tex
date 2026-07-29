@@ -20,28 +20,27 @@ labels to the student.
 
 \subsection{Teacher and Reference Distributions}
 
-The teacher follows the reproduced SHARP chain
+The official precomputed targets follow the SHARP chain
 \cite{meneghello2023sharp}: packet-level normalization, sparse path estimation,
 selection of the strongest path as phase reference, affine phase sanitization,
 Hann-windowed Doppler analysis, per-frame normalization, and flooring at
-\(\floorval\approx0.0631\). The network targets are the four maps recomputed
-with this implementation. Separately, the frozen HAR classifier was trained in
-the provided reproduction notebook on \emph{legacy} SHARP maps. Consequently,
-the experiments contain two reference distributions: recomputed maps define
-pixel fidelity, while legacy maps define the classifier's expected input
-distribution. We preserve this distinction rather than treating classifier
-accuracy as a pure reconstruction score.
+\(\floorval\approx0.0631\). We pair these paper-sourced maps with their raw CSI,
+and use the same map distribution both for regression metrics and for the frozen
+HAR classifier trained by the provided reproduction notebook.
 
-The final coherent experiment uses 164 recordings from all 18 AR scenarios in
-the public 80-MHz CSI dataset \cite{meneghello2023dataset}. Within every
-recording, the first \(80\%\) is available for training, \(80\)--\(90\%\) for
-validation, and \(90\)--\(100\%\) for final testing. All scenarios contribute
-to training and source validation; the classifier-compatible scenarios
-AR-1a/1b/1c determine early stopping and final reporting. A 31-frame guard
+The final experiment uses 92 temporally aligned recordings from all 12
+available legacy AR scenario folders in the public 80-MHz CSI dataset
+\cite{meneghello2023dataset}. Five of 97 candidate pairs are excluded because
+their raw and Doppler lengths do not have SHARP's expected temporal offset;
+forcing them into training would misalign input and target frames. Within every
+remaining recording, the first \(80\%\) is available for training,
+\(80\)--\(90\%\) for validation, and \(90\)--\(100\%\) for final testing. All
+12 scenarios contribute to training and source validation; classifier-compatible
+S1a/S1b/S1c determine early stopping and final reporting. A 31-frame guard
 between intervals prevents context leakage. Training windows use stride 170,
-while the final frozen-classifier evaluation uses stride 30 for denser
-coverage. Uncompressed NumPy memory maps and deterministic recording-aware
-windowing make this protocol reproducible without changing its samples.
+while frozen-classifier evaluation uses stride 30 for denser coverage.
+Uncompressed NumPy memory maps and deterministic recording-aware windowing make
+this protocol reproducible without changing its samples.
 
 \section{Learning Framework}
 \label{sec:framework}
@@ -71,14 +70,14 @@ Temporal 1-D U-Net (baseline) &
 Frequency and antenna axes flattened into channels; independent temporal
 output channels make the mean spectrum easy to represent. &
 3.245M & PI, 30 carriers \\
-Shared-antenna spatial head (\texttt{3wrefrft}) &
+Shared-antenna spatial head (\texttt{hpm4mjl4}) &
 One antenna-independent temporal core and a 2-D head; retains a coarse
 25-bin grid followed by spectral interpolation. &
-0.793M & AR+PC+PI, 242 carriers \\
-Full-resolution shared 2-D (\texttt{xhg1tsta}) &
+0.793M & legacy AR, 242 carriers \\
+Full-resolution shared 2-D (\texttt{az9k6ori}) &
 Joint frequency--time encoder, GroupNorm, direct 100-bin grid, full 2-D
 decoder, and exact valid-time crop. &
-1.314M & AR, 242 carriers \\
+1.314M & legacy AR, 242 carriers \\
 \hline
 \end{tabular}
 \end{table*}
@@ -126,9 +125,8 @@ impose complex phase equivariance.
 
 \subsection{Motion-Aware Objective and Sampling}
 
-Most target energy lies near zero Doppler: only \(28.4\%\) of scanned
-antenna--time frames exceed 0.2 outside the central bins. Plain MSE therefore
-rewards a stationary center ridge. We use
+Most target energy lies near zero Doppler, so plain MSE rewards a stationary
+center ridge. We use
 \begin{equation}
 \mathcal{L}=\mathcal{L}_{\mathrm{map}}
  +0.25\mathcal{L}_{\mathrm{motion}}
@@ -149,10 +147,11 @@ from equally wrong power far away.
 
 Training uses deterministic motion stratification. Within each recording, the
 top quartile of windows by active off-center frame fraction is marked
-motion-rich. Every epoch includes all 3,646 rich windows and an equal-size,
+motion-rich. Every epoch includes all 1,748 rich windows and an equal-size,
 non-duplicated rotating subset of ordinary windows. Batches contain 16 rich and
 16 ordinary windows drawn across eight recordings. Validation and test remain
 unmodified. The optimizer is Adam with learning rate \(10^{-3}\), automatic
-mixed precision, a 50-epoch limit, and patience 8 on AR-1a/1b/1c validation
-loss. Training stopped after epoch 25 and restored the best checkpoint from
-epoch 17.
+mixed precision, a 50-epoch limit, and patience 8 on S1a/S1b/S1c validation
+loss. Training completed all 50 epochs and restored the best checkpoint from
+epoch 45. The smaller comparison model uses all stride-30 windows and batch
+size 256.

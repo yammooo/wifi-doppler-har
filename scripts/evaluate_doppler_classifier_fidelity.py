@@ -14,7 +14,6 @@ from torch.utils.data import DataLoader
 
 
 LABELS = ("E", "L", "W", "R", "J")
-SCENARIOS = ("AR-1a", "AR-1b", "AR-1c")
 LEGACY_SCENARIOS = ("S1a", "S1b", "S1c")
 FLOOR = 10**-1.2
 
@@ -202,7 +201,7 @@ def estimate_recording_means(
 ) -> dict[str, torch.Tensor]:
     """Estimate each generator's full-recording mean for SHARP centering."""
     means = {
-        "recomputed_sharp": torch.from_numpy(np.asarray(teacher).mean(axis=1)).to(
+        "legacy_sharp_target": torch.from_numpy(np.asarray(teacher).mean(axis=1)).to(
             device=device,
             dtype=torch.float32,
         )
@@ -342,12 +341,12 @@ def evaluate_prepared(
     recordings = [
         item
         for item in manifest["recordings"]
-        if item["scenario"] in SCENARIOS and item["label"][:1] in LABELS
+        if item["scenario"] in LEGACY_SCENARIOS and item["label"][:1] in LABELS
     ]
     if not recordings:
-        raise ValueError(f"No classifier-compatible AR recordings in {prepared_root}.")
+        raise ValueError(f"No classifier-compatible legacy SHARP recordings in {prepared_root}.")
 
-    names = ("recomputed_sharp", "raw_fixed_stft", "affine_fixed_stft", *students)
+    names = ("legacy_sharp_target", "raw_fixed_stft", "affine_fixed_stft", *students)
     stats = {name: new_stats(len(LABELS)) for name in names}
     metrics = {
         name: DistillationMetricAccumulator(
@@ -397,11 +396,11 @@ def evaluate_prepared(
                 device=device,
             )
 
-            generated: dict[str, torch.Tensor] = {"recomputed_sharp": target}
+            generated: dict[str, torch.Tensor] = {"legacy_sharp_target": target}
             generated.update(generate_maps(raw_batch, students, device, stats))
 
             with torch.inference_mode():
-                centered_target = target - recording_means["recomputed_sharp"][:, None, :]
+                centered_target = target - recording_means["legacy_sharp_target"][:, None, :]
                 teacher_predictions, _ = classifier_predictions(
                     classifier,
                     centered_target,
@@ -456,7 +455,7 @@ def main() -> None:
     students, student_metadata = load_students(student_paths, device)
     print(f"device={device}; students={list(students)}", flush=True)
 
-    legacy = evaluate_legacy_teacher(
+    legacy_reference = evaluate_legacy_teacher(
         classifier,
         legacy_root,
         interval,
@@ -466,8 +465,8 @@ def main() -> None:
         device,
     )
     print(
-        f"legacy SHARP: {legacy['sharp_fusion_accuracy']:.4f} "
-        f"over {legacy['windows']} windows",
+        f"legacy SHARP reference: {legacy_reference['sharp_fusion_accuracy']:.4f} "
+        f"over {legacy_reference['windows']} windows",
         flush=True,
     )
     methods = evaluate_prepared(
@@ -480,6 +479,15 @@ def main() -> None:
         args.batch_size,
         device,
     )
+    prepared_reference = methods["legacy_sharp_target"]
+    if (
+        prepared_reference["windows"] != legacy_reference["windows"]
+        or prepared_reference["sharp_fusion_accuracy"]
+        != legacy_reference["sharp_fusion_accuracy"]
+    ):
+        raise RuntimeError(
+            "Prepared SHARP targets do not reproduce the direct legacy SHARP reference."
+        )
     for name, values in methods.items():
         print(
             f"{name}: accuracy={values['sharp_fusion_accuracy']:.4f} "
@@ -487,10 +495,14 @@ def main() -> None:
             flush=True,
         )
 
+    prepared_manifest = json.loads(
+        (prepared_root / "manifest.json").read_text(encoding="utf-8")
+    )
     results = {
         "protocol": {
-            "scenarios": list(SCENARIOS),
-            "legacy_scenarios": list(LEGACY_SCENARIOS),
+            "prepared_scenarios": list(LEGACY_SCENARIOS),
+            "legacy_reference_scenarios": list(LEGACY_SCENARIOS),
+            "teacher_source": "official precomputed SHARP traces",
             "labels": list(LABELS),
             "interval": list(interval),
             "window_size": 340,
@@ -510,7 +522,15 @@ def main() -> None:
             "checkpoint_sha256": sha256(classifier_path),
         },
         "students": student_metadata,
-        "legacy_sharp": legacy,
+        "legacy_sharp_reference": legacy_reference,
+        "prepared_manifest": {
+            "path": str(prepared_root / "manifest.json"),
+            "sources": prepared_manifest.get("sources", []),
+            "skipped_unaligned_recordings": prepared_manifest.get(
+                "skipped_unaligned_recordings",
+                [],
+            ),
+        },
         "methods": methods,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
