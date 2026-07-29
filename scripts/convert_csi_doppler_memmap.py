@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Preserve recordings in an existing output manifest and add these scenarios.",
     )
+    parser.add_argument(
+        "--legacy-alignment-only",
+        action="store_true",
+        help="For legacy S* traces, retain only recordings with the canonical 1631/1632-frame alignment.",
+    )
     return parser.parse_args()
 
 
@@ -86,7 +91,17 @@ def save_json_atomic(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
-def convert_recording(recording, output_root: Path, *, overwrite: bool) -> dict[str, Any]:
+def is_legacy_sharp_aligned(raw_frames: int, doppler_frames: int) -> bool:
+    return raw_frames - doppler_frames in (1631, 1632)
+
+
+def convert_recording(
+    recording,
+    output_root: Path,
+    *,
+    overwrite: bool,
+    legacy_alignment_only: bool,
+) -> dict[str, Any] | None:
     from wifi_doppler.data.prepared_csi_doppler_dataset import PREPARED_FORMAT_VERSION
 
     recording_dir = output_root / recording.scenario / recording.filename_stem
@@ -94,13 +109,35 @@ def convert_recording(recording, output_root: Path, *, overwrite: bool) -> dict[
     doppler_path = recording_dir / "doppler.npy"
     metadata_path = recording_dir / "metadata.json"
     if not overwrite and raw_path.is_file() and doppler_path.is_file() and metadata_path.is_file():
-        return json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if (
+            legacy_alignment_only
+            and recording.scenario.startswith("S")
+            and not is_legacy_sharp_aligned(
+                metadata["raw_shape"][-1],
+                metadata["doppler_shape"][1],
+            )
+        ):
+            return None
+        return metadata
 
     started_at = time.perf_counter()
     raw = recording.load_raw().astype(np.complex64, copy=False)
     doppler = recording.load_doppler().astype(np.float32, copy=False)
     if raw.shape[0] != doppler.shape[0]:
         raise ValueError(f"Antenna mismatch for {recording.filename_stem}: {raw.shape} vs {doppler.shape}")
+    if (
+        legacy_alignment_only
+        and recording.scenario.startswith("S")
+        and not is_legacy_sharp_aligned(raw.shape[-1], doppler.shape[1])
+    ):
+        print(
+            f"skipped unaligned {recording.filename_stem}: "
+            f"raw={raw.shape[-1]}, doppler={doppler.shape[1]}",
+            flush=True,
+        )
+        recording.clear_cache()
+        return None
 
     save_npy_atomic(raw_path, raw)
     save_npy_atomic(doppler_path, doppler)
@@ -168,6 +205,11 @@ def main() -> None:
                     "scenarios": sorted({item["scenario"] for item in recordings_by_key.values()}),
                 }
             )
+    skipped_unaligned = (
+        list(previous_manifest.get("skipped_unaligned_recordings", []))
+        if previous_manifest
+        else []
+    )
 
     for scenario in scenarios:
         dataset = CsiToSharpDopplerDataset(
@@ -184,7 +226,16 @@ def main() -> None:
         )
         try:
             for recording in dataset.traces:
-                item = convert_recording(recording, output_root, overwrite=args.overwrite)
+                item = convert_recording(
+                    recording,
+                    output_root,
+                    overwrite=args.overwrite,
+                    legacy_alignment_only=args.legacy_alignment_only,
+                )
+                if item is None:
+                    if recording.filename_stem not in skipped_unaligned:
+                        skipped_unaligned.append(recording.filename_stem)
+                    continue
                 key = (item["scenario"], item["label"], item["repetition"])
                 recordings_by_key[key] = item
         finally:
@@ -194,6 +245,7 @@ def main() -> None:
         "raw_root": str(raw_root),
         "doppler_root": str(doppler_root),
         "scenarios": sorted(scenarios),
+        "legacy_alignment_only": args.legacy_alignment_only,
     }
     if source not in sources:
         sources.append(source)
@@ -217,6 +269,7 @@ def main() -> None:
             else str(doppler_root)
         ),
         "sources": sources,
+        "skipped_unaligned_recordings": sorted(skipped_unaligned),
         "recordings": recordings,
     }
     save_json_atomic(manifest_path, manifest)

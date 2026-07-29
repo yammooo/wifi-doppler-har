@@ -1,0 +1,85 @@
+run:
+  id: null
+  output_root: experiments/runs
+  seed: 0
+
+device: auto
+
+data:
+  storage: memmap
+  raw_root: data/CSI-80Mhz
+  doppler_root: data/doppler_traces
+  prepared_root: data/csi_doppler_memmap_legacy_sharp_ar
+  doppler_window_size: 340
+  window_stride: 30
+  split_guard: 31
+  doppler_start: 800
+  doppler_sample_length: 31
+  doppler_sliding: 1
+  num_subcarriers: 242
+  subcarrier_sampling: fixed_uniform
+  num_subcarrier_views: 1
+  subcarrier_seed: 0
+  target_transform: none
+  splits:
+    train:
+      scenarios: [S1a, S1b, S1c, S2a, S2b, S3a, S4a, S4b, S5a, S6a, S6b, S7a]
+      interval: [0.0, 0.8]
+    source_val:
+      scenarios: [S1a, S1b, S1c, S2a, S2b, S3a, S4a, S4b, S5a, S6a, S6b, S7a]
+      interval: [0.8, 0.9]
+    target_val:
+      scenarios: [S1a, S1b, S1c]
+      interval: [0.8, 0.9]
+    target_test:
+      scenarios: [S1a, S1b, S1c]
+      interval: [0.9, 1.0]
+
+model:
+  architecture: unet1d_spatial_head_shared_antenna
+  num_antennas: 4
+  num_subcarriers: 242
+  input_parts: 2
+  output_doppler_bins: 100
+  output_time: 340
+  base_channels: 64
+  mid_channels: 96
+  bottleneck_channels: 128
+  head_channels: 4
+  head_coarse_bins: 25
+
+training:
+  loss: motion_aware_mse
+  loss_options:
+    floor: 0.0630957344
+    center_half_width: 5
+    motion_mse_weight: 0.25
+    background_leakage_weight: 0.25
+    wasserstein_weight: 0.05
+  sampling:
+    mode: all
+  batch_size: 768
+  recordings_per_batch: 12
+  window_shuffle_chunk_size: 8
+  batch_preparation_workers: 11
+  learning_rate: 0.001
+  epochs: 50
+  amp: true
+  early_stopping_patience: 8
+  early_stopping_min_delta: 0.0
+  early_stopping_metric: loss
+  log_every_steps: 20
+  validation_examples: 2
+  prefetch_batches: 8
+  pin_memory: true
+  cuda_prefetch: true
+  cudnn_benchmark: true
+  allow_tf32: true
+
+wandb:
+  mode: online
+  project: wifi-doppler-har
+  entity: yammo-unipd
+  name: legacy-sharp-ar-small-spatial-head
+  watch: null
+  watch_log_frequency: 100

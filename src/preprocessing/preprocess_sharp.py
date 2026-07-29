@@ -142,7 +142,7 @@ def build_t_matrix(
 
 
 class _PreparedLasso:
-    """An OSQP LASSO problem whose fixed matrix factorization is reused."""
+    """Prebuild invariant matrices while preserving SHARP's fresh OSQP solve."""
 
     def __init__(self, t_matrix: np.ndarray, selected_subcarriers: np.ndarray) -> None:
         t_selected = t_matrix[selected_subcarriers]
@@ -173,36 +173,31 @@ class _PreparedLasso:
             format="csc",
         )
 
-        self._row_t = row_t
+        self._p_matrix = p_matrix
+        self._a_matrix = a_matrix
+        self._m = m
         self._n = n
         self._selected_subcarriers = selected_subcarriers
-        self._lower = np.hstack([np.zeros(m), -np.inf * np.ones(n), np.zeros(n)])
-        self._upper = np.hstack([np.zeros(m), np.zeros(n), np.inf * np.ones(n)])
-        q_vector = np.hstack([np.zeros(n + m), 1e-1 * np.ones(n)])
-        self._zero_x = np.zeros(q_vector.shape)
-        self._zero_y = np.zeros(self._lower.shape)
-        self._solver = osqp.OSQP()
-        self._solver.setup(
-            p_matrix,
-            q_vector,
-            a_matrix,
-            self._lower,
-            self._upper,
-            warm_starting=True,
-            verbose=False,
-        )
+        self._setup_q = np.zeros(2 * n + m)
+        self._solve_q = np.hstack([np.zeros(n + m), 1e-1 * np.ones(n)])
 
     def solve(self, signal: np.ndarray) -> np.ndarray:
         signal_selected = signal[self._selected_subcarriers]
         h_real = np.hstack([signal_selected.real, signal_selected.imag])
-        m = 2 * self._row_t
-        self._lower[:m] = h_real
-        self._upper[:m] = h_real
-        self._solver.update(l=self._lower, u=self._upper)
-        # Keep each result equivalent to SHARP's fresh-solver behavior while
-        # retaining the cached symbolic/numeric matrix factorization.
-        self._solver.warm_start(x=self._zero_x, y=self._zero_y)
-        result = self._solver.solve()
+        lower = np.hstack([h_real, -np.inf * np.ones(self._n), np.zeros(self._n)])
+        upper = np.hstack([h_real, np.zeros(self._n), np.inf * np.ones(self._n)])
+        solver = osqp.OSQP()
+        solver.setup(
+            self._p_matrix,
+            self._setup_q,
+            self._a_matrix,
+            lower,
+            upper,
+            warm_start=True,
+            verbose=False,
+        )
+        solver.update(q=self._solve_q)
+        result = solver.solve()
         return result.x[: self._n // 2] + 1j * result.x[self._n // 2 : self._n]
 
 

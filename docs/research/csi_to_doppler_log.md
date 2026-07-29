@@ -2214,6 +2214,41 @@ Before making claims about neural approximation of SHARP, first reconcile the
 recomputed target generator with the legacy SHARP traces; otherwise target
 fidelity and student quality remain confounded.
 
+### Legacy-SHARP target retraining setup
+
+The `36.86%` frozen-classifier accuracy of the recomputed targets makes the
+previous student comparison unsuitable as the final test of direct
+regression. The two report models will therefore be retrained against the
+official precomputed SHARP traces used by the classifier.
+
+The complete legacy AR set contains 12 scenario folders. Exact label and frame
+matching established the raw-CSI aliases:
+
+| Legacy | Raw CSI | Legacy | Raw CSI |
+| --- | --- | --- | --- |
+| `S1a` | `AR-1a` | `S1b` | `AR-1b` |
+| `S1c` | `AR-1c` | `S2a` | `AR-1d` |
+| `S2b` | `AR-1e` | `S3a` | `AR-2a` |
+| `S4a` | `AR-3a` | `S4b` | `AR-3b` |
+| `S5a` | `AR-4a` | `S6a` | `AR-5a` |
+| `S6b` | `AR-5b` | `S7a` | `AR-7a` |
+
+Ninety-two recordings have the expected raw/target frame offset of 1631 or
+1632. Five mismatched legacy recordings are excluded rather than cropped or
+silently paired: `S4a_L`, `S4b_J1`, `S4b_J2`, `S5a_L`, and `S6b_J1`.
+
+Two configurations are prepared:
+
+- `legacy_sharp_ar_unet2d_shared_antenna_full_resolution.yaml`: the final
+  1.314M-parameter model, stride 170 and motion-stratified sampling.
+- `legacy_sharp_ar_unet1d_spatial_head_shared_antenna_small.yaml`: the smaller
+  spatial-head model, stride 30 and the previous Vast throughput settings.
+
+Both train on all 12 legacy scenarios over 0-80%. Source validation covers all
+12 over 80-90%; target validation and final test use classifier-compatible
+`S1a/S1b/S1c` over 80-90% and 90-100%, respectively. W&B runs and downstream
+classifier results are pending.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier

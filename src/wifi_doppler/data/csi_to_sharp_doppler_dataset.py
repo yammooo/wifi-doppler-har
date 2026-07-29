@@ -19,6 +19,20 @@ SHARP_DELETED_SUBCARRIERS = np.asarray(
     dtype=int,
 )
 NUM_SHARP_DATA_SUBCARRIERS = 256 - len(SHARP_DELETED_SUBCARRIERS)
+LEGACY_SHARP_RAW_SCENARIOS = {
+    "S1a": "AR-1a",
+    "S1b": "AR-1b",
+    "S1c": "AR-1c",
+    "S2a": "AR-1d",
+    "S2b": "AR-1e",
+    "S3a": "AR-2a",
+    "S4a": "AR-3a",
+    "S4b": "AR-3b",
+    "S5a": "AR-4a",
+    "S6a": "AR-5a",
+    "S6b": "AR-5b",
+    "S7a": "AR-7a",
+}
 
 
 @dataclass
@@ -341,14 +355,13 @@ def build_subcarrier_views(
 
 
 def raw_scenario_dir(doppler_scenario: str) -> str:
-    if doppler_scenario.startswith("S"):
-        return f"AR-{doppler_scenario[1:]}"
-    return doppler_scenario
+    return LEGACY_SHARP_RAW_SCENARIOS.get(doppler_scenario, doppler_scenario)
 
 
 def raw_file_key(doppler_scenario: str, raw_stem: str) -> tuple[str, str, str] | None:
     if doppler_scenario.startswith("S"):
-        prefixes = (f"{doppler_scenario}_", f"AR{doppler_scenario[1:]}_")
+        canonical_prefix = raw_scenario_dir(doppler_scenario).replace("-", "")
+        prefixes = (f"{doppler_scenario}_", f"{canonical_prefix}_")
         prefix = next((value for value in prefixes if raw_stem.startswith(value)), None)
         if prefix is None:
             return None

@@ -27,9 +27,14 @@ from preprocessing.preprocess_sharp import (  # noqa: E402
     resolve_subsets,
 )
 from optimization_utility import build_T_matrix, lasso_regression_osqp_fast  # noqa: E402
-from scripts.convert_csi_doppler_memmap import resolve_scenarios  # noqa: E402
+from scripts.convert_csi_doppler_memmap import (  # noqa: E402
+    is_legacy_sharp_aligned,
+    resolve_scenarios,
+)
 from wifi_doppler.data.csi_to_sharp_doppler_dataset import (  # noqa: E402
     CsiToSharpDopplerDataset,
+    raw_file_key,
+    raw_scenario_dir,
 )
 from wifi_doppler.data.doppler_dataset import parse_trace_filename  # noqa: E402
 
@@ -90,26 +95,27 @@ class GenericSharpPreprocessingTests(unittest.TestCase):
         )
         a2_matrix = scipy.sparse.hstack([identity_n, zeros_nm, -identity_n])
         a3_matrix = scipy.sparse.hstack([identity_n, zeros_nm, identity_n])
-        signal = np.random.default_rng(7).normal(size=242).astype(np.complex128)
-
-        original = lasso_regression_osqp_fast(
-            signal,
-            original_t,
-            selected,
-            row_t,
-            col_t,
-            identity_m,
-            zeros_nm,
-            p_matrix,
-            np.zeros(2 * n + m),
-            a2_matrix,
-            a3_matrix,
-            np.ones(n),
-            np.zeros(n),
-            np.zeros(n + m),
-        )
-        optimized = _PreparedLasso(optimized_t, selected).solve(signal)
-        np.testing.assert_allclose(optimized, original, atol=5e-4, rtol=5e-4)
+        prepared = _PreparedLasso(optimized_t, selected)
+        signals = np.random.default_rng(7).normal(size=(8, 242)).astype(np.complex128)
+        for signal in signals:
+            original = lasso_regression_osqp_fast(
+                signal,
+                original_t,
+                selected,
+                row_t,
+                col_t,
+                identity_m,
+                zeros_nm,
+                p_matrix,
+                np.zeros(2 * n + m),
+                a2_matrix,
+                a3_matrix,
+                np.ones(n),
+                np.zeros(n),
+                np.zeros(n + m),
+            )
+            reproduced = prepared.solve(signal)
+            np.testing.assert_array_equal(reproduced, original)
 
     def test_family_selectors_discover_ar_and_pc_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -139,6 +145,17 @@ class GenericSharpPreprocessingTests(unittest.TestCase):
                 resolve_scenarios(root, ["AR", "PC"]),
                 ["AR-1a", "S1b", "PC-1a"],
             )
+
+    def test_legacy_scenarios_map_to_canonical_raw_names(self) -> None:
+        self.assertEqual(raw_scenario_dir("S2a"), "AR-1d")
+        self.assertEqual(raw_scenario_dir("S6b"), "AR-5b")
+        self.assertEqual(
+            raw_file_key("S2a", "AR1d_J.mat".removesuffix(".mat")),
+            ("S2a", "J", ""),
+        )
+        self.assertTrue(is_legacy_sharp_aligned(20_000, 18_369))
+        self.assertTrue(is_legacy_sharp_aligned(20_000, 18_368))
+        self.assertFalse(is_legacy_sharp_aligned(20_000, 18_500))
 
     def test_compute_doppler_preserves_canonical_subset_and_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
