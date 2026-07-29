@@ -2150,6 +2150,70 @@ termination gate is met. The next modeling direction should explicitly correct
 phase or predict sanitized complex CSI before applying the known
 differentiable Doppler transform.
 
+### Frozen SHARP classifier comparison
+
+**Protocol and artifacts**
+
+- Frozen classifier:
+  `experiments/runs/sharp_baseline/checkpoint_sharp.pt`, SHA-256
+  `4f9cc539d4d85f17101cb206d9b0b98747233fb0216acfda64a539e6bc5229d9`.
+  It was trained by `notebooks/sharp_reproduction.ipynb` on legacy
+  `S1a/S1b/S1c`, labels `E/L/W/R/J`, interval 0-60%, and selected on 60-80%.
+- Test data: classifier-compatible `AR-1a/1b/1c`, interval 90-100%, stride 30,
+  guard 31. This interval is unseen by the classifier and both students.
+  Canonical `J1/J2` recordings are both evaluated as class `J`.
+- Students:
+  [`xhg1tsta`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/xhg1tsta)
+  best epoch 17 and
+  [`3wrefrft`](https://wandb.ai/yammo-unipd/wifi-doppler-har/runs/3wrefrft)
+  best epoch 26.
+- The classifier's training loader subtracts each method's recording-mean
+  spectrum. The evaluation applies the same method-specific centering without
+  using target statistics. Reconstruction metrics remain on uncentered maps.
+- Reproducible evaluator:
+  [`evaluate_doppler_classifier_fidelity.py`](../../scripts/evaluate_doppler_classifier_fidelity.py).
+  Full machine-readable output is
+  `experiments/runs/doppler_classifier_fidelity/results.json` (ignored run
+  artifact, retained on the Windows evaluation machine).
+
+| Method | SHARP fusion accuracy | Off-center MSE | Active precision | Active recall | Active F1 | Motion-mass ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Legacy SHARP maps | **91.36%** | n/a | n/a | n/a | n/a | n/a |
+| Recomputed SHARP target | 36.86% | 0 | 100% | 100% | 100% | 1.00 |
+| Raw CSI + fixed STFT | 21.70% | 0.12964 | 14.00% | 99.92% | 24.56% | 68.08 |
+| Affine correction + fixed STFT | **91.52%** | 0.00141 | 48.63% | 74.77% | **58.93%** | 2.01 |
+| `xhg1tsta`, full-resolution 2D | 40.89% | 0.00194 | 14.06% | 99.78% | 24.65% | 3.24 |
+| `3wrefrft`, small spatial head | 23.64% | **0.00097** | 41.06% | 17.16% | 24.20% | 0.49 |
+
+**Findings**
+
+- The frozen classifier remains valid: native legacy SHARP test maps score
+  91.36%. Affine phase correction plus the fixed 31-packet STFT matches that
+  upper bound at 91.52%; their 95% Wilson intervals overlap
+  (`89.08-93.21%` and `89.25-93.34%`). Raw STFT collapses to predicting `R`
+  for every window.
+- The recomputed SHARP targets score only 36.86%. This is a target-generator
+  compatibility failure, not a student-only failure. The students were trained
+  to imitate maps that do not preserve the frozen classifier's original input
+  distribution.
+- `xhg1tsta` predicts nearly every frame as active: 99.78% recall, 14.06%
+  precision, and 3.24 times the target off-center mass. This quantitatively
+  confirms the broad off-center halo seen in its heatmaps.
+- `3wrefrft` has the lowest pixel and off-center MSE but only 23.64% classifier
+  accuracy. It suppresses motion instead: 17.16% recall and 0.49 motion-mass
+  ratio. Lower MSE therefore does not imply better HAR preservation.
+- Affine STFT has slightly worse pixel MSE than `3wrefrft` but almost four times
+  its classifier accuracy. For the report, downstream accuracy and motion
+  support metrics should lead; global MSE should be secondary.
+
+**Decision**
+
+Use affine phase correction plus fixed STFT as the practical result and
+primary baseline. Do not spend the remaining time tuning the direct-map CNNs.
+Before making claims about neural approximation of SHARP, first reconcile the
+recomputed target generator with the legacy SHARP traces; otherwise target
+fidelity and student quality remain confounded.
+
 ## Open Paper-Level Questions
 
 - Is exact SHARP-map reconstruction necessary, or is preserving classifier
