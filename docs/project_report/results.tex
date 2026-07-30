@@ -26,14 +26,16 @@ ideal. Frozen classifier accuracy is the primary task metric.
 Before full-data training, two students were optimized repeatedly on the same
 16 motion-rich PI windows. The 30-subcarrier model reached
 \(3.881\times10^{-5}\) MSE, while the 242-subcarrier model reached
-\(4.194\times10^{-5}\). Both reproduced the selected peaks. Thus, the end-to-end training path is functioning correctly, and the model has sufficient capacity to memorize the selected local examples, although this test says nothing about generalization.
+\(4.194\times10^{-5}\)(\figref{fig:diagnostics}(a)). Both reproduced the selected peaks. Thus, the end-to-end training path is functioning
+correctly, and the model has sufficient capacity to memorize the selected local
+examples, although this test says nothing about generalization.
 
 \textbf{Full-data behavior.}
 With official precomputed SHARP Doppler supervision, the final model behaves
 very differently from the preliminary students. Motion-aware training loss decreases from
 0.03397 to 0.01264 over all 50 epochs. All-scenario validation decreases from
 0.02800 to 0.01415, while S1a/S1b/S1c validation decreases from 0.02506 to
-0.01326 and reaches its minimum, 0.01212, at epoch 45. Both validation curves
+0.01326 and reaches its minimum, 0.01212, at epoch 45 (\figref{fig:diagnostics}(b)). Both validation curves
 continue improving, so there is no observed deterioration on the held-out
 temporal intervals. Because training uses motion-balanced sampling while
 validation retains the natural distribution, their absolute loss gap is not
