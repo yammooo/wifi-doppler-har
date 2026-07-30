@@ -29,8 +29,8 @@ failure. First, do frequency-aware decoding, antenna-independent weights, exact
 temporal alignment, and motion-aware training prevent a center-spectrum
 shortcut? Second, do pixel reconstruction metrics predict whether generated
 maps remain useful to a frozen SHARP classifier? Third, what does a comparison
-with explicit affine phase correction reveal about the transformation that a
-student must learn?
+with a simplified SHARP-derived phase-sanitization baseline reveal about the
+transformation that a student must learn?
 
 The contribution is a feasibility study rather than a new state-of-the-art HAR
 method:
@@ -42,7 +42,7 @@ method:
     Doppler locality;
     \item evidence that a full-resolution student partially preserves held-out
     motion and HAR utility, together with a class-level analysis of the
-    remaining smoothing failure and a stronger explicit affine baseline.
+    remaining smoothing failure and a stronger SHARP-derived affine baseline.
 \end{itemize}
 
 \figref{fig:pipeline} summarizes the comparison. Both pixel fidelity and
@@ -57,7 +57,7 @@ and loss, and answers the research questions experimentally.
     \centering
     \includegraphics[width=\textwidth]{pipeline.pdf}
     \caption{Evaluation design. Raw CSI is transformed by the SHARP teacher, a
-    direct neural student, or a simple affine phase correction followed by the
+    direct neural student, or simplified affine sanitization followed by the
     same fixed Hann/STFT tail. Reconstruction metrics compare windowed targets
     from the official precomputed SHARP Doppler traces; a frozen classifier
     measures retained HAR utility.}

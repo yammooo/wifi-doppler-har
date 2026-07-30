@@ -41,8 +41,9 @@ When trained against the official precomputed SHARP Doppler traces, the full-res
 student localizes held-out motion and reaches \(63.09\%\) frozen-classifier
 accuracy, versus \(43.31\%\) for the antenna-shared temporal model with a coarse
 spectral head, but it smooths spectral detail and confuses walking and jumping with running. The
-official Doppler representation reaches \(91.36\%\). A non-learned affine phase correction followed
-by the fixed Doppler transform also reaches \(91.36\%\), with \(94.3\%\)
+official Doppler representation reaches \(91.36\%\). A non-learned,
+SHARP-derived affine sanitization baseline followed by the fixed Doppler
+transform also reaches \(91.36\%\), with \(94.3\%\)
 active-frame F1 versus \(75.8\%\) for the best student. Direct regression
 therefore learns part of the transformation but is not a drop-in SHARP
 replacement. The results favor phase-aware hybrid models; the experiments do

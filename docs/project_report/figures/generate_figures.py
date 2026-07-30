@@ -275,7 +275,7 @@ def make_diagnostics(
 
 def make_qualitative(path: Path, output_dir: Path) -> None:
     values = np.load(path)
-    methods = (("target", "Precomputed SHARP"), ("student", "Neural student"), ("affine", "Affine-STFT"))
+    methods = (("target", "Precomputed SHARP"), ("student", "Neural student"), ("affine", "Affine + fixed STFT"))
     antennas = (2, 3)
     fig, axes = plt.subplots(2, 3, figsize=(7.15, 3.25), sharex=True, sharey=True)
     image = None

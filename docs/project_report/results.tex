@@ -60,7 +60,8 @@ example, but does not preserve all fine motion geometry.
     \includegraphics[width=\textwidth]{qualitative.pdf}
     \caption{Held-out S1a\_C window 16920--17260 with identical color limits.
     The full-resolution student localizes the principal target events but
-    broadens them; affine-STFT retains sharper time--Doppler structure.}
+    broadens them; affine sanitization followed by the fixed STFT retains
+    sharper time--Doppler structure.}
     \label{fig:qualitative}
 \end{figure*}
 
@@ -88,7 +89,7 @@ Mass ratio \\
 \hline
 Official precomputed SHARP Doppler & \textbf{91.36} & 91.74 & 0 & 1.000 & 1.00 \\
 Raw fixed STFT & 21.73 & 20.00 & 0.128148 & 0.357 & 33.28 \\
-Affine correction + fixed STFT & \textbf{91.36} & \textbf{91.80} & \textbf{0.000155} & \textbf{0.943} & \textbf{0.98} \\
+Direct affine sanitization + fixed STFT & \textbf{91.36} & \textbf{91.80} & \textbf{0.000155} & \textbf{0.943} & \textbf{0.98} \\
 Full-resolution frequency--time student & 63.09 & 58.86 & 0.001062 & 0.758 & 1.21 \\
 Shared temporal student + coarse spectral head & 43.31 & 40.05 & 0.002758 & 0.505 & 2.22 \\
 \hline
@@ -110,25 +111,25 @@ insufficient by themselves: active support treats a broad running-like lobe as
 successful even when it erases class-discriminative shape. Reconstruction and
 task metrics must therefore be reported together.
 
-\subsection{RQ3: What Does Explicit Phase Correction Reveal?}
+\subsection{RQ3: What Does a Simplified Phase-Sanitization Baseline Reveal?}
 
-The affine baseline unwraps each antenna's subcarrier phase, fits the
-packet-wise phase difference from the first packet as
-\(\alpha_t s+\beta_t\) by least squares, subtracts it, and applies the fixed
-Hann/STFT tail. This is an explicit correction of a packet-dependent affine
-phase slope and offset, not evidence of invariance to every phase nuisance, and
-it is not proposed as a novel algorithm. It matches the classifier accuracy of
-the official precomputed SHARP Doppler at \(91.36\%\); both share the Wilson interval
-\(89.08\)--\(93.21\%\). Their individual predictions agree on \(98.33\%\) of
-windows. Thus, they make a small number of different errors whose gains and
-losses approximately balance, producing equal aggregate accuracy. The affine
+We include a non-learned baseline to test whether explicitly encoding a known
+phase-error structure is sufficient, rather than asking the student to discover
+it. The procedure is adapted from the affine phase-sanitization stage in
+SHARP's public pipeline \cite{meneghello2023sharp}, consistent with established
+CSI phase-error models \cite{ratnam2024optimal}. It applies only this correction
+directly to raw CSI, omits SHARP's sparse path estimation, and then uses the
+fixed Doppler transform.
+
+This baseline matches the classifier accuracy of the official precomputed
+SHARP Doppler at \(91.36\%\). Their individual predictions agree on \(98.33\%\) of
+windows. Thus, the methods make different mistakes on a small number of samples, and these differences cancel out, resulting in the same overall accuracy. The affine
 method obtains off-center MSE \(1.55\times10^{-4}\), F1 \(0.943\), and
 motion-mass ratio 0.982.
 
 This establishes that the local raw windows contain enough information for a
 high-utility representation. It also highlights the main remaining neural error:
-the direct student learns event localization despite nuisance phase, but its
-generic decoder approximates sharp sparse structure by conditional averages.
+the direct model learns the approximate timing and location of motion despite unwanted phase noise. However, its generic decoder often replaces SHARP’s sharp, sample-specific peaks with smoother average patterns.
 Under this setup, explicit affine phase modeling is highly effective and leaves
 a substantially smaller gap than the corrected generic neural decoder.
 
@@ -138,13 +139,10 @@ The experiments use one seed, one frozen classifier, and 92 aligned AR
 recordings paired with official precomputed SHARP Doppler traces; five candidate pairs are
 excluded for temporal mismatch. The classifier test measures compatibility
 with SHARP's established interface, not
-the performance of a newly trained classifier adapted to student maps. No
-equivalent end-to-end runtime comparison is available.
+the performance of a newly trained classifier adapted to student maps. 
 
 The answer to the primary question is therefore mixed but operationally
 negative. Direct regression can learn a meaningful approximation: the corrected
 model generalizes event support and reaches \(63.09\%\), so the task is not
 infeasible. It does not preserve enough fine structure to replace SHARP at
-\(91.36\%\), especially for walking and jumping. A phase-aware hybrid that
-sanitizes CSI explicitly and learns only a residual or downstream transform is
-the most justified next design.
+\(91.36\%\), especially for walking and jumping. The most promising next step is a phase-aware hybrid model that first cleans the CSI and then learns only the remaining correction or transformation.

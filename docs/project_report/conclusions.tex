@@ -1,15 +1,11 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-Direct raw-CSI regression learned meaningful held-out motion support and the
-complete corrected configuration improved over the previous neural baseline,
+Direct raw-CSI regression learned meaningful motion,
 but it was not classifier-equivalent to the official precomputed SHARP Doppler
 representation.
 Its main failure was spectral and temporal smoothing, especially for walking
-and jumping. Explicit affine phase correction followed by the fixed Doppler
-transform performed substantially better under the tested setup. This supports
+and jumping. The SHARP-derived affine sanitization baseline followed by the
+fixed Doppler transform performed substantially better under the tested setup. This supports
 future phase-aware or hybrid learned models, such as learning after explicit
-sanitization or unrolling the sparse phase stage. Because architecture,
-normalization, alignment, sampling, batch size, and schedule changed together,
-the experiments do not isolate each contribution; repeated seeds and equivalent
-runtime measurements also remain future work.
+sanitization or unrolling the sparse phase stage.
