@@ -20,40 +20,66 @@ labels to the student.
 
 \subsection{Teacher and Reference Distributions}
 
-The official precomputed targets follow the SHARP chain
+The distributed targets are the \emph{official precomputed SHARP Doppler
+traces}: the unmodified per-recording outputs distributed with the original
+dataset. Each trace contains, for every receiver stream and time frame, a
+normalized 100-bin Doppler spectrum. A 340-frame crop therefore forms the
+target array \([4,340,100]\), which we call a Doppler map: ``map'' denotes this
+two-dimensional time--Doppler representation, not the learned
+raw-CSI-to-Doppler function. The traces follow the SHARP chain
 \cite{meneghello2023sharp}: packet-level normalization, sparse path estimation,
 selection of the strongest path as phase reference, affine phase sanitization,
 Hann-windowed Doppler analysis, per-frame normalization, and flooring at
-\(\floorval\approx0.0631\). We pair these paper-sourced maps with their raw CSI,
-and use the same map distribution both for regression metrics and for the frozen
-HAR classifier trained by the provided reproduction notebook.
+\(\floorval\approx0.0631\). We pair these traces with their raw CSI. The student
+is trained and evaluated against windows cropped from the traces, while the
+frozen HAR classifier from the reproduction notebook was trained on windows
+from the same traces. This avoids comparing student outputs with a classifier
+trained on a separately regenerated Doppler representation.
 
 The final experiment uses 92 temporally aligned recordings from all 12
-available legacy AR scenario folders in the public 80-MHz CSI dataset
+available AR scenario folders represented in the official release
 \cite{meneghello2023dataset}. Five of 97 candidate pairs are excluded because
 their raw and Doppler lengths do not have SHARP's expected temporal offset;
 forcing them into training would misalign input and target frames. Within every
-remaining recording, the first \(80\%\) is available for training,
+remaining recording, the student uses \(0\)--\(80\%\) for training,
 \(80\)--\(90\%\) for validation, and \(90\)--\(100\%\) for final testing. All
-12 scenarios contribute to training and source validation; classifier-compatible
-S1a/S1b/S1c determine early stopping and final reporting. A 31-frame guard
+12 scenarios contribute to training and to an all-scenario validation diagnostic.
+Early stopping uses S1a/S1b/S1c because the frozen downstream classifier
+evaluation is defined on those scenarios. The classifier itself was trained on \(0\)--\(60\%\), selected on
+\(60\)--\(80\%\), and is evaluated on the same disjoint \(90\)--\(100\%\)
+interval as the student. This tests unseen temporal portions of known
+recordings, not unseen recordings, people, or environments. A 31-frame guard
 between intervals prevents context leakage. Training windows use stride 170,
-while frozen-classifier evaluation uses stride 30 for denser coverage.
-Uncompressed NumPy memory maps and deterministic recording-aware windowing make
-this protocol reproducible without changing its samples.
+while frozen-classifier evaluation uses stride 30, reproducing exactly the SHARP implementation.
+% Uncompressed NumPy memory maps and deterministic recording-aware windowing make
+% this protocol reproducible without changing its samples.
 
 \section{Learning Framework}
 \label{sec:framework}
 
 \subsection{Architecture Progression}
 
-The initial temporal U-Net flattened antenna, subcarrier, and complex
-components into channels, then assigned an independent output channel to every
-antenna--Doppler pair. This makes a recording-average vertical spectrum an easy
-solution. The next model shared one single-antenna network across all antennas
-and added a spatial output head, but retained a 25-bin spectral bottleneck and
-interpolation. The final model removes both shortcuts. \tabref{tab:models}
-records the representative configurations and W\&B runs used in the report.
+We report three milestones, each responding to a failure of the preceding
+design. The initial \emph{flattened temporal U-Net} applies Conv1D over time
+after folding antennas, subcarriers, and complex components into channels. Its
+400 output channels have no Doppler-neighborhood structure, making the observed
+per-bin mean spectrum and vertical ridge easy to learn. The
+\emph{antenna-shared temporal U-Net with coarse spectral head} uses one
+estimator for every receiver stream, preventing antenna-specific shortcuts, and
+adds 2-D convolutions across neighboring time--Doppler pixels. However, it
+mixes subcarriers in the first projection and interpolates 25 predicted bins to
+100, a low-resolution bottleneck that favors broad peaks.
+
+The final \emph{antenna-shared frequency--time U-Net with full-resolution
+decoder} retains ordered subcarriers through a 2-D encoder because SHARP
+exploits cross-subcarrier phase structure. It uses GroupNorm instead of
+batch-composition-dependent BatchNorm, predicts all 100 bins directly, and
+crops 15 frames per side rather than resizing 370 inputs to 340 outputs, thus
+preserving the timing of 31-packet Doppler windows.
+
+These are the initial design, the evaluated intermediate design, and the final
+corrected design. Other runs varied training, data, or capacity, or served as
+diagnostics rather than introducing a distinct architecture. \tabref{tab:models} summarises these milestones.
 
 \begin{table*}[t]
 \centering
@@ -66,23 +92,24 @@ from the saved configurations.}
 \hline
 Model (representative run) & Main inductive bias and limitation & Parameters & Training domain \\
 \hline
-Temporal 1-D U-Net (baseline) &
+Flattened temporal U-Net (baseline) &
 Frequency and antenna axes flattened into channels; independent temporal
 output channels make the mean spectrum easy to represent. &
 3.245M & PI, 30 carriers \\
-Shared-antenna spatial head (\texttt{hpm4mjl4}) &
-One antenna-independent temporal core and a 2-D head; retains a coarse
-25-bin grid followed by spectral interpolation. &
-0.793M & legacy AR, 242 carriers \\
-Full-resolution shared 2-D (\texttt{az9k6ori}) &
+Antenna-shared temporal U-Net + coarse spectral head (\texttt{hpm4mjl4}) &
+One temporal network per antenna; subcarriers remain channels and a 2-D head
+produces 25 bins followed by spectral interpolation. &
+0.793M & official AR Doppler, 242 carriers \\
+Antenna-shared frequency--time U-Net + full-resolution decoder
+(\texttt{az9k6ori}) &
 Joint frequency--time encoder, GroupNorm, direct 100-bin grid, full 2-D
 decoder, and exact valid-time crop. &
-1.314M & legacy AR, 242 carriers \\
+1.314M & official AR Doppler, 242 carriers \\
 \hline
 \end{tabular}
 \end{table*}
 
-\subsection{Full-Resolution Shared-Antenna Model}
+\subsection{Antenna-Shared Frequency--Time U-Net}
 
 The final architecture processes antennas independently with identical weights.
 It reshapes
@@ -106,12 +133,11 @@ subcarrier structure is the remaining frequency axis averaged; a standard
 The bottleneck is projected directly to
 \([BA,16,92,100]\). A proper 2-D time--Doppler decoder upsamples time through
 92, 185, and 370 positions and merges two projected encoder skips. It predicts
-all 100 Doppler bins directly, with no 25-to-100 spectral interpolation. The
+all 100 Doppler bins directly. The
 output head produces \([BA,370,100]\); removing exactly 15 frames from each
 side yields the valid \([B,A,340,100]\) output. \figref{fig:architecture}
 summarizes this flow. The model has 1,314,385 trainable parameters. These
-changes correct the identified decoder and alignment flaws, but they do not
-impose complex phase equivariance.
+changes correct the identified decoder and alignment flaws.
 
 \begin{figure*}[t]
     \centering
@@ -137,13 +163,16 @@ center ridge. We use
 \(\mathcal{L}_{\mathrm{map}}\) is MSE over all antennas, times, and 100 bins.
 Bins 45--55 are designated stationary. Outside them,
 \(\mathcal{L}_{\mathrm{motion}}\) weights squared error continuously by target
-activity \(\operatorname{clip}((Y-\floorval)/(1-\floorval),0,1)\).
-\(\mathcal{L}_{\mathrm{leak}}\) penalizes predicted power above the floor where
-the target is at the floor. Finally, \(\mathcal{L}_{W}\) normalizes positive
+activity defined as:
+\[
+    w_{\mathrm{motion}} = \operatorname{clip}\left(\frac{Y-\floorval}{1-\floorval},0,1\right).
+\]
+\(\mathcal{L}_{\mathrm{leak}}\) is the mean linear excess above the background
+floor on pixels where the target is at the floor. Finally,
+\(\mathcal{L}_{W}\) is a one-dimensional Wasserstein term  that accounts for distance between Doppler bins, so predicting a peak near the correct location is penalized less than placing the same amount of power far away.
+It normalizes positive
 off-center power into a distribution and averages the absolute difference
 between predicted and target cumulative sums along the 100-bin Doppler axis.
-This one-dimensional Wasserstein term distinguishes a nearby displaced peak
-from equally wrong power far away.
 
 Training uses deterministic motion stratification. Within each recording, the
 top quartile of windows by active off-center frame fraction is marked

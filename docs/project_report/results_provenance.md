@@ -37,12 +37,12 @@ The evaluator is
 S1a/S1b/S1c windows from the 90--100% interval and the frozen classifier
 checkpoint with SHA-256
 `4f9cc539d4d85f17101cb206d9b0b98747233fb0216acfda64a539e6bc5229d9`.
-The direct legacy loader and prepared official target produce identical
+The direct distributed-map loader and prepared official target produce identical
 predictions.
 
 | Representation | Accuracy | Off-center MSE | Active F1 | Mass ratio |
 |---|---:|---:|---:|---:|
-| Official SHARP | 0.9136490251 | 0 | 1.000000 | 1.000000 |
+| Official precomputed SHARP Doppler | 0.9136490251 | 0 | 1.000000 | 1.000000 |
 | Raw fixed STFT | 0.2172701950 | 0.128147833 | 0.356539 | 33.280733 |
 | Affine-STFT | 0.9136490251 | 0.000154666 | 0.942881 | 0.982350 |
 | `az9k6ori` | 0.6309192201 | 0.001061870 | 0.758329 | 1.211515 |
@@ -54,7 +54,7 @@ The 95% Wilson intervals are `89.08-93.21%` for SHARP and affine-STFT,
 ## Dataset and Figures
 
 - The prepared manifest contains 92 aligned recordings from all 12 official
-  legacy AR scenario folders. It excludes `S4a_L`, `S4b_J1`, `S4b_J2`,
+  official AR scenario folders. It excludes `S4a_L`, `S4b_J1`, `S4b_J2`,
   `S5a_L`, and `S6b_J1` because their raw/target frame offsets are invalid.
 - `figures/data/s1a_c_16920_legacy_comparison.npz` contains the official
   target, epoch-45 neural output, and affine-STFT output used in Figure 4.

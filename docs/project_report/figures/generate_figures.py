@@ -265,7 +265,7 @@ def make_diagnostics(
     ax.axvline(45, color=RED, linestyle="--", linewidth=1, label="best checkpoint")
     ax.set_xlabel("epoch")
     ax.set_ylabel("motion-aware loss")
-    ax.set_title("(b) Official-SHARP full-data experiment")
+    ax.set_title("(b) Precomputed-SHARP full-data experiment")
     ax.grid(alpha=0.25)
     ax.legend(frameon=False, ncol=2, loc="upper right")
     fig.tight_layout(w_pad=1.4)
@@ -275,7 +275,7 @@ def make_diagnostics(
 
 def make_qualitative(path: Path, output_dir: Path) -> None:
     values = np.load(path)
-    methods = (("target", "Official SHARP"), ("student", "Neural student"), ("affine", "Affine-STFT"))
+    methods = (("target", "Precomputed SHARP"), ("student", "Neural student"), ("affine", "Affine-STFT"))
     antennas = (2, 3)
     fig, axes = plt.subplots(2, 3, figsize=(7.15, 3.25), sharex=True, sharey=True)
     image = None
