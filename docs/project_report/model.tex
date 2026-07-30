@@ -78,8 +78,9 @@ crops 15 frames per side rather than resizing 370 inputs to 340 outputs, thus
 preserving the timing of 31-packet Doppler windows.
 
 These are the initial design, the evaluated intermediate design, and the final
-corrected design. Other runs varied training, data, or capacity, or served as
-diagnostics rather than introducing a distinct architecture. \tabref{tab:models} summarises these milestones.
+corrected design. Other experiments varied training, data, or capacity, or
+served as diagnostics rather than introducing a distinct architecture.
+\tabref{tab:models} summarises these milestones.
 
 \begin{table*}[t]
 \centering
@@ -90,18 +91,17 @@ from the saved configurations.}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}p{0.20\textwidth}p{0.47\textwidth}p{0.09\textwidth}p{0.16\textwidth}@{}}
 \hline
-Model (representative run) & Main inductive bias and limitation & Parameters & Training domain \\
+Model & Main inductive bias and limitation & Parameters & Training domain \\
 \hline
 Flattened temporal U-Net (baseline) &
 Frequency and antenna axes flattened into channels; independent temporal
 output channels make the mean spectrum easy to represent. &
 3.245M & PI, 30 carriers \\
-Antenna-shared temporal U-Net + coarse spectral head (\texttt{hpm4mjl4}) &
+Antenna-shared temporal U-Net + coarse spectral head &
 One temporal network per antenna; subcarriers remain channels and a 2-D head
 produces 25 bins followed by spectral interpolation. &
 0.793M & official AR Doppler, 242 carriers \\
-Antenna-shared frequency--time U-Net + full-resolution decoder
-(\texttt{az9k6ori}) &
+Antenna-shared frequency--time U-Net + full-resolution decoder &
 Joint frequency--time encoder, GroupNorm, direct 100-bin grid, full 2-D
 decoder, and exact valid-time crop. &
 1.314M & official AR Doppler, 242 carriers \\
@@ -153,28 +153,35 @@ changes correct the identified decoder and alignment flaws.
 
 Most target energy lies near zero Doppler, so plain MSE rewards a stationary
 center ridge. We use
-\begin{equation}
+\begin{align*}
 \mathcal{L}=\mathcal{L}_{\mathrm{map}}
  +0.25\mathcal{L}_{\mathrm{motion}}
  +0.25\mathcal{L}_{\mathrm{leak}}
- +0.05\mathcal{L}_{W}.
+ +0.05\mathcal{L}_{W}
 \label{eq:loss}
-\end{equation}
+\end{align*}
 \(\mathcal{L}_{\mathrm{map}}\) is MSE over all antennas, times, and 100 bins.
-Bins 45--55 are designated stationary. Outside them,
-\(\mathcal{L}_{\mathrm{motion}}\) weights squared error continuously by target
-activity defined as:
-\[
-    w_{\mathrm{motion}} = \operatorname{clip}\left(\frac{Y-\floorval}{1-\floorval},0,1\right).
-\]
-\(\mathcal{L}_{\mathrm{leak}}\) is the mean linear excess above the background
-floor on pixels where the target is at the floor. Finally,
-\(\mathcal{L}_{W}\) is a one-dimensional Wasserstein term  that accounts for distance between Doppler bins, so predicting a peak near the correct location is penalized less than placing the same amount of power far away.
-It normalizes positive
-off-center power into a distribution and averages the absolute difference
-between predicted and target cumulative sums along the 100-bin Doppler axis.
+For the composite batch, antenna, time, and Doppler-bin index
+\(i=(b,a,t,d)\), let \(m_d=0\) for stationary bins \(45\)--\(55\) and
+\(m_d=1\) otherwise. With background floor \(f=\floorval\), define
 
-Training uses deterministic motion stratification. Within each recording, the
+\begin{align*}
+q_i=m_d\operatorname{clip}\!\left(\frac{Y_i-f}{1-f},0,1\right)\\
+\mathcal{L}_{\mathrm{motion}}
+=\frac{\sum_i q_i(\hat Y_i-Y_i)^2}
+        {\max(\sum_i q_i,\epsilon)}
+\end{align*}
+
+Thus, the squared prediction error is weighted by target motion strength: background and stationary-center pixels contribute zero, weak off-center responses contribute less, and the strongest motion peaks receive full weight. Dividing by total target activity prevents the
+many background pixels from diluting motion errors. This term focuses on false negatives and distortions of true motion: it penalizes motion peaks that are missed, weakened, or predicted with the wrong shape. False positives, where the model predicts motion in target-background regions, are penalized separately by
+\(\mathcal{L}_{\mathrm{leak}}\). The full-map MSE still supervises the center
+and background. The leakage term linearly penalizes power on
+target-background pixels. \(\mathcal{L}_{W}\) \cite{frogner2015wasserstein} compares normalized
+off-center spectra through their cumulative sums along the 100-bin axis, making
+distant peak errors costlier than nearby displacements.
+
+Training uses custom deterministic motion stratification, a data-level response
+to imbalance \cite{he2009imbalanced}. Within each recording, the
 top quartile of windows by active off-center frame fraction is marked
 motion-rich. Every epoch includes all 1,748 rich windows and an equal-size,
 non-duplicated rotating subset of ordinary windows. Batches contain 16 rich and

@@ -1,4 +1,4 @@
-"""Generate the report figures from saved W&B histories and evaluation arrays."""
+"""Generate the report figures from saved experiment histories and evaluation arrays."""
 
 from __future__ import annotations
 

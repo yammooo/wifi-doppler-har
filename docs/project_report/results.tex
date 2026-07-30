@@ -18,22 +18,18 @@ precomputed SHARP Doppler traces. A frame is active when its maximum outside
 bins 45--55 exceeds 0.2;
 precision, recall, and F1 compare predicted and target support. The motion-mass
 ratio is total predicted divided by target off-center excess power, with one
-ideal. Frozen classifier accuracy is the primary task metric. Loading the maps
-through the prepared-data path reproduces all 718 direct-map predictions,
-confirming that map and classifier provenance are aligned.
+ideal. Frozen classifier accuracy is the primary task metric.
 
 \subsection{RQ1: Can the Student Learn the Mapping?}
 
 \textbf{Memorization sanity check.}
 Before full-data training, two students were optimized repeatedly on the same
-16 motion-rich PI windows. With 30 subcarriers, run \texttt{cwj0myug} reached
-\(3.881\times10^{-5}\) MSE; with all 242, \texttt{tm8nyt19} reached
-\(4.194\times10^{-5}\). Both reproduced the selected peaks. Thus, the
-implementation is differentiable and has sufficient capacity to memorize the
-local transform, although this test says nothing about generalization.
+16 motion-rich PI windows. The 30-subcarrier model reached
+\(3.881\times10^{-5}\) MSE, while the 242-subcarrier model reached
+\(4.194\times10^{-5}\). Both reproduced the selected peaks. Thus, the end-to-end training path is functioning correctly, and the model has sufficient capacity to memorize the selected local examples, although this test says nothing about generalization.
 
-\textbf{Matched full-data behavior.}
-With official precomputed SHARP Doppler supervision, run \texttt{az9k6ori} behaves
+\textbf{Full-data behavior.}
+With official precomputed SHARP Doppler supervision, the final model behaves
 very differently from the preliminary students. Motion-aware training loss decreases from
 0.03397 to 0.01264 over all 50 epochs. All-scenario validation decreases from
 0.02800 to 0.01415, while S1a/S1b/S1c validation decreases from 0.02506 to
@@ -50,14 +46,11 @@ interpreted.
     memorize 16 fixed windows. (b) With official precomputed SHARP Doppler
     supervision, full-data
     train and validation objectives improve throughout training; the dashed
-    line marks the selected epoch-45 checkpoint. Curves come from W\&B runs
-    \texttt{cwj0myug}, \texttt{tm8nyt19}, and \texttt{az9k6ori}.}
+    line marks the selected epoch-45 checkpoint.}
     \label{fig:diagnostics}
 \end{figure*}
 
-The held-out example in \figref{fig:qualitative} confirms genuine conditional
-learning. The student places off-center responses at the target event times and
-on the correct side of the spectrum. Its main error is now spatial smoothing:
+The held-out example in \figref{fig:qualitative} shows that the model has learned an input-dependent mapping rather than producing a fixed average Doppler pattern. The student places off-center responses at the target event times. Its main error is now spatial smoothing:
 thin target peaks become wider lobes, and nearby temporal events merge. The
 complete corrected configuration avoids the center-only shortcut in this
 example, but does not preserve all fine motion geometry.
@@ -71,17 +64,14 @@ example, but does not preserve all fine motion geometry.
     \label{fig:qualitative}
 \end{figure*}
 
-\subsection{RQ2: Do Reconstruction Metrics Predict HAR Utility?}
+\subsection{RQ2: Do Reconstructed Doppler Traces Preserve Downstream HAR
+Performance Under a Frozen Classifier?}
 
 \tabref{tab:main-results} gives the matched comparison. The antenna-shared
 frequency--time U-Net reaches \(63.09\%\), a 19.78-point improvement over the
 antenna-shared temporal U-Net with a coarse spectral head and well above raw
-STFT. Its 95\% Wilson interval is \(59.50\)--\(66.54\%\), disjoint from the
-intermediate model's
-\(39.74\)--\(46.97\%\). The complete corrected architecture and training
-configuration therefore improves both map and downstream metrics. Architecture,
-normalization, temporal alignment, sampling, batch size, and effective training
-schedule changed together, so their individual contributions are not isolated.
+STFT. The complete corrected architecture and training
+configuration therefore improves both map and downstream metrics.
 
 \begin{table*}[t]
 \centering
@@ -99,8 +89,8 @@ Mass ratio \\
 Official precomputed SHARP Doppler & \textbf{91.36} & 91.74 & 0 & 1.000 & 1.00 \\
 Raw fixed STFT & 21.73 & 20.00 & 0.128148 & 0.357 & 33.28 \\
 Affine correction + fixed STFT & \textbf{91.36} & \textbf{91.80} & \textbf{0.000155} & \textbf{0.943} & \textbf{0.98} \\
-Full-resolution student (\texttt{az9k6ori}) & 63.09 & 58.86 & 0.001062 & 0.758 & 1.21 \\
-Shared temporal + coarse spectral head (\texttt{hpm4mjl4}) & 43.31 & 40.05 & 0.002758 & 0.505 & 2.22 \\
+Full-resolution frequency--time student & 63.09 & 58.86 & 0.001062 & 0.758 & 1.21 \\
+Shared temporal student + coarse spectral head & 43.31 & 40.05 & 0.002758 & 0.505 & 2.22 \\
 \hline
 \end{tabular}
 \end{table*}
